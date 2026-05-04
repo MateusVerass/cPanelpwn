@@ -411,35 +411,65 @@ def _is_whm_response(resp: R) -> bool:
     body = (resp.body or "").lower()
     return any(sig in body for sig in _WHM_SIGNATURES)
 
-def crtsh_subdomains(domain: str, timeout: int = 20) -> Set[str]:
-    """
-    Query crt.sh Certificate Transparency logs for all subdomains.
-    Passive — generates no noise on the target.
-    """
+def _parse_ct_entries(body: str, domain: str) -> Set[str]:
+    """Parse JSON entries from any CT log API that returns name_value/common_name."""
     results: Set[str] = set()
-    url = f"https://crt.sh/?q=%.{domain}&output=json"
-    log("DISC", f"Querying crt.sh for *.{domain} ...")
     try:
-        resp = _do(url, timeout=timeout)
-        if resp.status != 200 or not resp.body:
-            log("WARN", f"crt.sh returned HTTP {resp.status}")
-            return results
-        entries = json.loads(resp.body)
+        entries = json.loads(body)
         for entry in entries:
             for raw in entry.get("name_value", "").split("\n"):
-                raw = raw.strip().lower()
-                if raw.startswith("*."):
-                    raw = raw[2:]
+                raw = raw.strip().lower().lstrip("*.")
                 if raw == domain or raw.endswith(f".{domain}"):
                     results.add(raw)
             cn = entry.get("common_name", "").strip().lower().lstrip("*.")
             if cn == domain or cn.endswith(f".{domain}"):
                 results.add(cn)
-    except json.JSONDecodeError:
-        log("WARN", "crt.sh response was not valid JSON")
+    except (json.JSONDecodeError, Exception):
+        pass
+    return results
+
+def crtsh_subdomains(domain: str, timeout: int = 20) -> Set[str]:
+    """
+    Query CT logs for subdomains — crt.sh primary, certspotter.com fallback.
+    Passive — generates no noise on the target.
+    """
+    results: Set[str] = set()
+
+    # Primary: crt.sh
+    log("DISC", f"Querying crt.sh for *.{domain} ...")
+    try:
+        resp = _do(f"https://crt.sh/?q=%.{domain}&output=json", timeout=timeout)
+        if resp.status == 200 and resp.body:
+            results = _parse_ct_entries(resp.body, domain)
+            log("OK", f"crt.sh: {len(results)} hostname(s)")
+            return results
+        log("WARN", f"crt.sh HTTP {resp.status} — tentando certspotter...")
     except Exception as e:
-        log("WARN", f"crt.sh query failed: {e}")
-    log("OK", f"crt.sh: {len(results)} unique hostname(s)")
+        log("WARN", f"crt.sh falhou ({e}) — tentando certspotter...")
+
+    # Fallback: certspotter.com
+    log("DISC", f"Querying certspotter.com para *.{domain} ...")
+    try:
+        resp2 = _do(
+            f"https://api.certspotter.com/v1/issuances"
+            f"?domain={domain}&include_subdomains=true&expand=dns_names",
+            timeout=timeout)
+        if resp2.status == 200 and resp2.body:
+            try:
+                entries = json.loads(resp2.body)
+                for entry in entries:
+                    for name in entry.get("dns_names", []):
+                        name = name.strip().lower().lstrip("*.")
+                        if name == domain or name.endswith(f".{domain}"):
+                            results.add(name)
+                log("OK", f"certspotter: {len(results)} hostname(s)")
+            except Exception:
+                log("WARN", "certspotter: resposta inválida")
+        else:
+            log("WARN", f"certspotter HTTP {resp2.status}")
+    except Exception as e:
+        log("WARN", f"certspotter falhou: {e}")
+
     return results
 
 def dns_brute(domain: str, wordlist: List[str], threads: int = 100) -> Set[str]:
@@ -464,21 +494,33 @@ def dns_brute(domain: str, wordlist: List[str], threads: int = 100) -> Set[str]:
     log("OK", f"DNS brute: {len(results)} live hostname(s)")
     return results
 
-# WHM/cPanel ports to probe in order — first live URL wins
+# WHM/cPanel ports to probe
 WHM_PORTS = [2087, 2083, 2086, 2082]
 
 def probe_whm(host: str, timeout: int = 8) -> Optional[str]:
     """
-    Try WHM_PORTS in order; return the first URL with a cPanel/WHM login page,
-    or None if no port responds with a recognisable WHM signature.
+    Probe all WHM_PORTS in parallel; return the first URL with a cPanel/WHM
+    login page, or None. Parallel probing avoids stalling on hanging ports.
     """
-    for port in WHM_PORTS:
+    result: list = []
+    result_lock  = threading.Lock()
+
+    def _try(port: int):
         scheme = "https" if port in (2087, 2083) else "http"
         url    = f"{scheme}://{host}:{port}/login"
+        log("DISC", f"  probe {host}:{port} ...")
         resp   = _do(url, timeout=timeout, follow=False)
         if _is_whm_response(resp):
-            return f"{scheme}://{host}:{port}"
-    return None
+            with result_lock:
+                if not result:
+                    result.append(f"{scheme}://{host}:{port}")
+
+    with ThreadPoolExecutor(max_workers=len(WHM_PORTS)) as ex:
+        futs = [ex.submit(_try, p) for p in WHM_PORTS]
+        for _ in as_completed(futs):
+            pass
+
+    return result[0] if result else None
 
 def discover_subdomains(domain: str, threads: int, timeout: int,
                         timeout_probe: int = 5) -> List[str]:
