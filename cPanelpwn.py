@@ -1983,7 +1983,7 @@ def print_summary(elapsed: float, total: int):
 
     # ── No findings ───────────────────────────────────────────────────
     if not findings:
-        p(f"  {C.GREEN}✔  Nenhum alvo vulnerável encontrado.{C.RESET}")
+        p(f"  {C.GREEN}✔  No vulnerable targets found.{C.RESET}")
         p()
         return
 
@@ -2510,7 +2510,12 @@ Examples:
         targets += disc
 
     if not targets:
-        p.print_help(); sys.exit(1)
+        print(f"{C.RED}[ERROR]{C.RESET} No targets provided. "
+              f"Use -u, -l, --domain, or pipe via stdin.\n"
+              f"  Example: python3 cPanelpwn.py -u https://host:2087\n"
+              f"  Example: python3 cPanelpwn.py --domain target.com",
+              file=sys.stderr)
+        sys.exit(1)
 
     targets = list(dict.fromkeys(targets))   # deduplicate, preserve order
 
