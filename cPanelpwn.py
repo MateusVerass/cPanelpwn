@@ -424,7 +424,7 @@ def _parse_ct_entries(body: str, domain: str) -> Set[str]:
             cn = entry.get("common_name", "").strip().lower().lstrip("*.")
             if cn == domain or cn.endswith(f".{domain}"):
                 results.add(cn)
-    except (json.JSONDecodeError, Exception):
+    except Exception:
         pass
     return results
 
@@ -536,7 +536,7 @@ def discover_subdomains(domain: str, threads: int, timeout: int,
     log("DISC", f"Subdomain discovery for: {C.CYAN}{domain}{C.RESET}")
     log("DISC", f"{'─'*50}")
 
-    ct_hosts    = crtsh_subdomains(domain, timeout=timeout_probe)
+    ct_hosts    = crtsh_subdomains(domain, timeout=max(timeout, 20))
     brute_hosts = dns_brute(domain, WHM_WORDLIST, threads=min(threads * 3, 150))
 
     all_hosts: Set[str] = ct_hosts | brute_hosts | {domain}
@@ -1428,7 +1428,7 @@ def save_html_report(findings: list, out_file: str, elapsed: float, total: int):
             f'<div class="field"><label>Canonical</label><value>{e(str(f.get("canonical","")))}</value></div>'
             f'<div class="field"><label>Timestamp</label><value>{e(str(f.get("timestamp","")))}</value></div>'
             f'<div class="field"><label>API URL</label>'
-            f'<value><a href="{e(str(f.get("api_url","")))}"">{e(str(f.get("api_url","")))}</a></value></div>'
+            f'<value><a href="{e(str(f.get("api_url","")))}">{e(str(f.get("api_url","")))}</a></value></div>'
             f'<div class="field"><label>Session</label>'
             f'<value>{e(str(f.get("session",""))[:70])}...</value></div>'
             f'<div class="field evidence"><label>Evidence</label>'
