@@ -20,13 +20,13 @@
   <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-41940"><img src="https://img.shields.io/badge/CVE--2026--41940-CVSS%3A10.0-red?style=flat-square" alt="CVE"></a>
   <img src="https://img.shields.io/badge/cPanel%20%26%20WHM-Auth%20Bypass-critical?style=flat-square&color=red" alt="cPanel">
   <img src="https://img.shields.io/badge/stdlib%20only-sem%20pip-green?style=flat-square" alt="stdlib">
-  <img src="https://img.shields.io/badge/WAFs-18%20cobertos-orange?style=flat-square" alt="WAFs">
+  <img src="https://img.shields.io/badge/WAFs-22%20cobertos-orange?style=flat-square" alt="WAFs">
   <img src="https://img.shields.io/badge/pipeline-ready-blue?style=flat-square" alt="pipeline">
 </p>
 
 <p align="center">
   <b>CVE-2026-41940 — Bypass de Autenticação no cPanel & WHM via Injeção CRLF em Arquivo de Sessão</b><br>
-  Cadeia de exploit em 4 estágios · Bypass automático de 18 WAFs · Shell WHM interativo · Scanner em massa · Pronto para pipelines · Apenas stdlib Python
+  Cadeia de exploit em 4 estágios · Bypass automático de 22 WAFs · 4 fases de bypass · Shell WHM interativo · Scanner em massa · Pronto para pipelines · Apenas stdlib Python
 </p>
 
 ---
@@ -38,7 +38,7 @@
 - **CVSS:** 10.0 (Crítico)
 - **Exploração in-the-wild:** Confirmada (Abril de 2026)
 - **Instalações afetadas:** ~70 milhões de domínios rodando cPanel & WHM
-- **WAFs cobertos:** 18 com bypass automático e agente de pesquisa online
+- **WAFs cobertos:** 22 com bypass automático e agente de pesquisa online
 - **Sem dependências:** Python stdlib puro — sem pip, sem requests, sem pacotes externos
 
 > **Para uso exclusivo em testes de penetração autorizados e programas de bug bounty.**
@@ -270,45 +270,36 @@ shodan search --fields ip_str,port 'title:"WHM Login"' | \
 
 ## Detecção e Bypass de WAF/CDN
 
-O scanner detecta automaticamente 18 WAFs/CDNs antes de executar a cadeia de exploit e aplica o perfil de bypass correspondente — **sem nenhuma configuração manual**.
+O scanner detecta automaticamente 22 WAFs/CDNs antes de executar a cadeia de exploit e aplica o perfil de bypass correspondente — **sem nenhuma configuração manual**.
 
 ### WAFs Suportados
 
 | Categoria | WAFs |
 |-----------|------|
-| CDN Global | Cloudflare, Akamai, Fastly |
+| CDN Global | Cloudflare, Akamai, Fastly, CloudFront, BunnyCDN, StackPath, Edgio |
 | Segurança Web | Sucuri, Imperva/Incapsula, Reblaze, Wallarm, DenyAll |
 | Appliance | F5 BIG-IP, Barracuda, FortiWeb, Radware |
 | Cloud | AWS WAF, Azion |
 | Open Source | ModSecurity, NAXSI, Wordfence |
 
-### Estratégia de Bypass
+### Estratégia de Bypass — 4 Fases
 
-Cada WAF tem um perfil com headers de spoofing de IP que fazem o WAF tratar a requisição como originária de `localhost` (geralmente na whitelist) e um delay entre estágios para evasão de rate-limit.
+Cada WAF tem um perfil primário. Quando falha, o **bypass agent** executa 4 fases progressivas automaticamente:
 
 ```
 [WARN] WAF/CDN detectado: Cloudflare — bypass profile active
 [INFO]   Bypass: 8 spoofing header(s)  inter-stage delay=0.8s
-         headers=[X-Forwarded-For, CF-Connecting-IP, X-Real-IP, ...]
-```
-
-### Agente de Bypass Automático
-
-Quando o perfil primário falha, o **bypass agent** é ativado automaticamente e itera por técnicas progressivas enquanto pesquisa online em paralelo:
-
-```
 [WARN] Stage 2 blocked by WAF — activating bypass agent
-[INFO] [bypass-agent] 11 local techniques + live internet research
-[INFO] [bypass-agent] [1/11] IPv6 localhost
-[INFO] [bypass-agent] [2/11] RFC1918 class-A
-[INFO] [bypass-agent] [3/11] RFC1918 class-B
-[DISC] [bypass-agent] Researching Cloudflare bypass online...
-[OK]   [bypass-agent] Bypass successful! technique: chained X-Forwarded-For
+[INFO] [bypass-agent] 13 header + 6 path + 3 payload techniques + live internet research
+[INFO] [bypass-agent] Chrome UA spoof
+[INFO] [bypass-agent] Switching to path-normalisation techniques...
+[INFO] [bypass-agent] Path double-slash
+[OK]   [bypass-agent] Bypass via path normalisation! path: //
 ```
 
-**Técnicas genéricas (9, sem rede):**
+**Fase 1 — Técnicas de header (13, sem rede):**
 
-| # | Técnica | Headers |
+| # | Técnica | Detalhe |
 |---|---------|---------|
 | 1 | IPv6 localhost | `X-Forwarded-For: ::1` |
 | 2 | RFC1918 Classe A | `X-Forwarded-For: 10.0.0.1` |
@@ -319,8 +310,35 @@ Quando o perfil primário falha, o **bypass agent** é ativado automaticamente e
 | 7 | Browser fingerprint | Sec-Fetch-*, Accept-*, Referer |
 | 8 | Googlebot spoof | `X-Forwarded-For: 66.249.66.1` |
 | 9 | Shotgun (15 headers) | Todos os headers de spoof simultaneamente |
+| 10 | HTTP verb override | `X-HTTP-Method-Override: GET` |
+| 11 | Content-Type GET bypass | `Content-Type: application/x-www-form-urlencoded` |
+| 12 | Chrome UA spoof | User-Agent Chrome 124 + Accept-Language |
+| 13 | Firefox UA spoof | User-Agent Firefox 125 + Accept-Encoding |
 
-**Pesquisa online em background:** consulta PayloadsAllTheThings, Awesome-WAF e GitHub Code Search, extrai headers de bypass via regex e os testa automaticamente.
+**Fase 2 — Path normalisation (6 variantes de URI):**
+
+WAFs verificam o path literal; cpsrvd normaliza no servidor — a requisição chega ao mesmo handler mas bypassa a assinatura do WAF.
+
+| # | Técnica | Path |
+|---|---------|------|
+| 1 | Double-slash | `//` |
+| 2 | Dot-slash | `/./` |
+| 3 | Slash URL-encoded | `/%2F` |
+| 4 | Path traversal | `/login/../` |
+| 5 | Semicolon separator | `/;/` |
+| 6 | Double dot-slash | `/../` |
+
+**Fase 3 — Payloads CRLF alternativos (3 variantes):**
+
+Diferentes terminadores de linha bypassam assinaturas WAF no header `Authorization: Basic`.
+
+| # | Técnica | Detalhe |
+|---|---------|---------|
+| 1 | Bare-CR | `\r` apenas (sem `\n`) |
+| 2 | LF-only | `\n` apenas (sem `\r`) |
+| 3 | Bare-CR + shotgun headers | `\r` + 6 headers de spoof simultâneos |
+
+**Fase 4 — Pesquisa online em background:** consulta PayloadsAllTheThings, Awesome-WAF e GitHub Code Search, extrai headers de bypass via regex e os testa automaticamente.
 
 ---
 

