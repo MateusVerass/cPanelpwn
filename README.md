@@ -125,6 +125,89 @@ Não requer instalação de pacotes. Apenas Python 3.8+ puro.
 
 ---
 
+## Novidades na v2.2
+
+| Recurso | Descrição |
+|---------|-----------|
+| `--delay` / `--jitter` | Atraso fixo + jitter aleatório por requisição (evasão de rate-limit) |
+| `--user-agent` | User-Agent customizado em todas as requisições |
+| `--no-research` | Desativa a pesquisa online de bypass (privacidade / operação silenciosa) |
+| `--wordlist` | Lista customizada de prefixos DNS para `--domain` |
+| `--no-banner` / `-V` | Suprime o banner ASCII / imprime a versão |
+| Retry 5xx/429 | Erros de servidor transitórios agora são repetidos como erros de rede |
+| Pesquisa GitHub | Code Search usa `GITHUB_TOKEN` (antes falhava silenciosamente com 401) |
+| Refactor | Perfis WAF gerados programaticamente (~190 linhas a menos de repetição) |
+
+---
+
+## Novidades na v2.3
+
+| Recurso | Descrição |
+|---------|-----------|
+| **CVE feed no startup** | Busca CVEs recentes de cPanel/WHM na API da NVD ao iniciar (cache 24h em `~/.cache/cpanelpwn/`, sem API key) |
+| `--cve-feed` | Força atualização do feed, ignorando o cache |
+| `--no-cve-feed` | Desativa o feed completamente |
+| `--cve-days N` | Janela de dias do feed (padrão: 90) |
+| **Update check** | Compara a versão local com os releases do GitHub (falha silenciosa) |
+| `--no-update-check` | Desativa a checagem de versão |
+| `--check` com `-o` | Agora suporta `.csv` e `.html` (antes só JSON) |
+
+### CVE Feed
+
+Ao iniciar, a tool consulta a **NVD API** (`keywordSearch=cpanel` + `whm`, filtradas por `pubStartDate`/`pubEndDate`) e exibe as CVEs publicadas na janela configurada — sem necessidade de API key:
+
+```
+[INFO] CVE feed — 6 CVE(s) cPanel/WHM publicada(s) nos últimos 90d:
+[INFO]   CVE-2026-67401  CVSS 9.9  2026-09-09  A vulnerability in cPanel allows a mail-enabled account to achieve remote code execution as root thr...
+[INFO]   CVE-2026-65643  CVSS 8.8  2026-09-01  Eval injection in cPanel 11.138.0.0 and earlier allows remote authenticated users to execute arbitra...
+```
+
+- O resultado é **cacheado por 24h** — execuções repetidas não batem na API (rate-limit da NVD: ~5 req/30s por IP sem key).
+- O cache fica em `~/.cache/cpanelpwn/cve_feed.json` (ou `$XDG_CACHE_HOME`).
+- Falsos positivos do **WHMCS** (produto diferente que casa com a keyword "whm") são filtrados automaticamente.
+- Em `-q` (quiet) o feed é suprimido, ideal para pipelines.
+- Fallback: API da CIRCL (`cve.circl.lu`) caso a NVD falhe.
+
+---
+
+## Novidades na v2.4
+
+| Recurso | Descrição |
+|---------|-----------|
+| **Código modularizado** | Single-file (~3100 linhas) dividido em pacote `cpanelpwn/` com 13 módulos (`config`, `core`, `http`, `waf`, `discovery`, `parsers`, `exploit`, `actions`, `store`, `scanner`, `report`, `cve_feed`, `cli`) — stdlib only, Python 3.8+ |
+| `--json-lines` | Emite cada finding como uma linha NDJSON em stdout (pipe para `jq`) |
+| `--resume [FILE]` | Retoma um scan em batch interrompido: salta alvos já escaneados e restaura findings (checkpoint em `~/.cache/cpanelpwn/resume.json`) |
+| `--no-checkpoint` | Desativa a escrita do checkpoint de resume |
+| **Checkpoint automático** | Em scans batch, cada alvo terminado é persistido; Ctrl-C salva o estado |
+| **Suite de testes** | `tests/` com unittest stdlib (68 tests: core, parsers, WAF, HTTP, CVE feed, store) |
+| **CI** | `.github/workflows/ci.yml` — matrix Python 3.8–3.12: compile + unittest + smoke |
+| **100% PT-BR** | Todos os textos da tool (help, logs, docstrings, comentários) traduzidos a português brasileiro |
+
+### Uso novo
+
+```bash
+# Findings como NDJSON (pipe a jq)
+python3 cPanelpwn.py -l alvos.txt --json-lines | jq -r '.target + " " + .version'
+
+# Scan em batch interrompido → retomar depois
+python3 cPanelpwn.py -l alvos.txt -t 20          # Ctrl-C a meio
+python3 cPanelpwn.py -l alvos.txt -t 20 --resume # salta o que já foi escaneado
+
+# Checkpoint customizado
+python3 cPanelpwn.py -l alvos.txt --resume /tmp/scan.state
+
+# Sem checkpoint (batch descartable)
+python3 cPanelpwn.py -l alvos.txt --no-checkpoint
+```
+
+### Testes
+
+```bash
+python3 -m unittest discover -s tests -t .   # 68 tests, stdlib only
+```
+
+---
+
 ## Uso
 
 ### Scan Básico
@@ -144,6 +227,15 @@ python3 cPanelpwn.py -l alvos.txt -t 20 -o resultados.json
 
 # Relatório HTML com tema escuro
 python3 cPanelpwn.py -l alvos.txt -t 20 -o resultados.html
+
+# Stealth: atraso de 0.5s + jitter de até 0.3s entre requisições
+python3 cPanelpwn.py -u https://alvo.com:2087 --delay 0.5 --jitter 0.3
+
+# User-Agent customizado + sem banner
+python3 cPanelpwn.py -u https://alvo.com:2087 --user-agent "curl/8.0" --no-banner
+
+# Versão da ferramenta
+python3 cPanelpwn.py --version
 ```
 
 ### Verificação Passiva de Versão (sem exploit)
@@ -167,6 +259,9 @@ python3 cPanelpwn.py --domain empresa.com.br --max-targets 50 -o resultado.html
 
 # Limitar tempo de probe e número de alvos
 python3 cPanelpwn.py --domain empresa.com.br --timeout-probe 3 --max-targets 30 -q
+
+# Wordlist DNS customizada (um prefixo por linha, '#' = comentário)
+python3 cPanelpwn.py --domain empresa.com.br --wordlist meus-prefixos.txt -t 20
 ```
 
 Fontes de descoberta:
@@ -287,7 +382,7 @@ O scanner detecta automaticamente 22 WAFs/CDNs antes de executar a cadeia de exp
 Cada WAF tem um perfil primário. Quando falha, o **bypass agent** executa 4 fases progressivas automaticamente:
 
 ```
-[WARN] WAF/CDN detectado: Cloudflare — bypass profile active
+[WARN] WAF/CDN detectado: Cloudflare — perfil de bypass ativo
 [INFO]   Bypass: 8 spoofing header(s)  inter-stage delay=0.8s
 [WARN] Stage 2 blocked by WAF — activating bypass agent
 [INFO] [bypass-agent] 13 header + 6 path + 3 payload techniques + live internet research
@@ -339,6 +434,8 @@ Diferentes terminadores de linha bypassam assinaturas WAF no header `Authorizati
 | 3 | Bare-CR + shotgun headers | `\r` + 6 headers de spoof simultâneos |
 
 **Fase 4 — Pesquisa online em background:** consulta PayloadsAllTheThings, Awesome-WAF e GitHub Code Search, extrai headers de bypass via regex e os testa automaticamente.
+
+> A pesquisa consulta serviços de terceiros (vaza o nome do WAF detectado). Para operações silenciosas, use `--no-research`. O GitHub Code Search exige autenticação: exporte `GITHUB_TOKEN` para ativá-lo — sem token, a fonte é pulada silenciosamente.
 
 ---
 
@@ -435,6 +532,7 @@ Target:
   -l, --list ARQUIVO      Arquivo de alvos — detecta nmap XML, masscan JSON,
                           Shodan NDJSON ou texto simples automaticamente
   --domain DOMÍNIO        Domínio raiz para descoberta de subdomínios
+  --wordlist ARQUIVO      Wordlist DNS customizada para --domain (um prefixo/linha)
   --hostname HOST         Forçar cabeçalho Host canônico
   --session COOKIE        Reusar cookie de sessão existente (pula estágios 0-3)
   --token /cpsessXXX      Reusar token cpsess existente (requer --session)
@@ -446,7 +544,12 @@ Scan:
   --timeout N             Timeout da cadeia de exploit em segundos (padrão: 15)
   --timeout-probe N       Timeout para fase de descoberta/WAF (padrão: 5)
   --retries N             Tentativas por requisição em erro transitório (padrão: 2)
+                          (inclui HTTP 5xx/429 desde a v2.2)
   --rate-limit N          Segundos entre envios de alvos (padrão: 0)
+  --delay N               Atraso fixo por requisição em segundos (padrão: 0)
+  --jitter N              Jitter aleatório 0..N s adicionado ao --delay (padrão: 0)
+  --user-agent UA         User-Agent customizado para todas as requisições
+  --no-research           Desativa pesquisa online de bypass WAF (privacidade)
   --proxy URL             Proxy HTTP (ex: http://127.0.0.1:8080)
   --check                 Verificação passiva de versão apenas — sem exploit
 
@@ -464,6 +567,14 @@ Output:
   -o, --output ARQUIVO    Salvar resultados (.json, .csv ou .html)
   -q, --quiet             Suprimir logs exceto PWNED/CRIT/HIGH
   --no-color              Desativar cores ANSI
+  --no-banner             Suprimir o banner ASCII (início e resumo)
+  -V, --version           Imprimir versão e sair
+
+CVE Feed:
+  --cve-feed              Forçar atualização do feed (ignora cache de 24h)
+  --no-cve-feed           Desativar o feed de CVEs no startup
+  --cve-days N            Janela do feed em dias (padrão: 90)
+  --no-update-check       Desativar checagem de versão no GitHub
 ```
 
 ---
@@ -484,7 +595,7 @@ ssl.cert.subject.cn:"cPanel" port:2087
 
 ```
 14:46:22 [SCAN] Starting exploit chain...                  https://alvo.com:2087
-14:46:22 [WARN] WAF/CDN detectado: Cloudflare — bypass profile active
+14:46:22 [WARN] WAF/CDN detectado: Cloudflare — perfil de bypass ativo
 14:46:22 [INFO]   Bypass: 8 spoofing header(s)  inter-stage delay=0.8s
 14:46:23 [INFO] Canonical hostname discovered: srv01.alvo.com
 14:46:24 [STEP] Stage 1/4 — Minting preauth session...
