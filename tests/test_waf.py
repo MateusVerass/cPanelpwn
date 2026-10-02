@@ -3,7 +3,7 @@ import unittest
 
 from cpanelpwn.http import R
 from cpanelpwn.waf import (
-    WAF_BYPASS, WAF_SIGNATURES, detect_waf, get_bypass_delay,
+    WAF_BYPASS, WAF_SIGNATURES, get_bypass_delay,
     get_bypass_headers, _mk_profile,
 )
 

@@ -8,7 +8,6 @@ from cpanelpwn.cve_feed import (
     _cve_score, _parse_circl_cves, _parse_nvd_cves, _read_json_cache,
     _ver_tuple, _write_json_cache, cve_feed_sources,
 )
-
 NVD_BODY = json.dumps({
     "resultsPerPage": 2,
     "vulnerabilities": [
@@ -62,9 +61,7 @@ class TestParseCircl(unittest.TestCase):
         body = json.dumps([{"id": "CVE-2026-3", "summary": "WHMCS vuln",
                             "cvss": {"score": 9.0}}])
         cves = _parse_circl_cves(body)
-        from cpanelpwn.cve_feed import fetch_cve_feed
-        # fetch_cve_feed faz o drop WHMCS; simular checando o raw
-        # parse o mantém e o drop vive em fetch (check sem rede abaixo)
+        # fetch_cve_feed faz o drop WHMCS; o parser puro mantém a entrada
         self.assertEqual(cves[0]["id"], "CVE-2026-3")
 
 
@@ -107,6 +104,16 @@ class TestSources(unittest.TestCase):
         self.assertIn("circl", kinds)
         self.assertTrue(any("pubStartDate" in u for k, u in srcs
                             if k == "nvd"))
+
+    def test_window_chunked_over_120_days(self):
+        from cpanelpwn.cve_feed import _date_windows
+        wins = _date_windows(200)
+        self.assertGreaterEqual(len(wins), 2)
+        for start, end in wins:
+            self.assertLessEqual((end - start).days, 120)
+        # cada fatia gera 2 fontes NVD (cpanel + whm)
+        nvd = [k for k, _ in cve_feed_sources(200) if k == "nvd"]
+        self.assertEqual(len(nvd), 2 * len(wins))
 
 
 if __name__ == "__main__":

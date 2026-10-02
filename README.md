@@ -12,12 +12,12 @@
 ██║     ╚███╔███╔╝██║ ╚████║
 ╚═╝      ╚══╝╚══╝ ╚═╝  ╚═══╝
   CVE-2026-41940 — cPanel & WHM Auth Bypass via CRLF Injection
-  In-The-Wild | CVSS 10.0
+  In-The-Wild | CVSS 9.8
 ```
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.8%2B-blue?style=flat-square&logo=python" alt="Python"></a>
-  <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-41940"><img src="https://img.shields.io/badge/CVE--2026--41940-CVSS%3A10.0-red?style=flat-square" alt="CVE"></a>
+  <a href="https://nvd.nist.gov/vuln/detail/CVE-2026-41940"><img src="https://img.shields.io/badge/CVE--2026--41940-CVSS%3A9.8-red?style=flat-square" alt="CVE"></a>
   <img src="https://img.shields.io/badge/cPanel%20%26%20WHM-Auth%20Bypass-critical?style=flat-square&color=red" alt="cPanel">
   <img src="https://img.shields.io/badge/stdlib%20only-sem%20pip-green?style=flat-square" alt="stdlib">
   <img src="https://img.shields.io/badge/WAFs-22%20cobertos-orange?style=flat-square" alt="WAFs">
@@ -35,7 +35,7 @@
 
 **cPanelpwn** é um framework de exploração focado na **CVE-2026-41940**, uma vulnerabilidade crítica de bypass de autenticação que afeta o cPanel & WHM. A falha permite que atacantes não autenticados obtenham acesso root ao WHM injetando sequências CRLF no arquivo de sessão através do cabeçalho HTTP `Authorization` — sem nenhuma credencial válida.
 
-- **CVSS:** 10.0 (Crítico)
+- **CVSS:** 9.8 (Crítico)
 - **Exploração in-the-wild:** Confirmada (Abril de 2026)
 - **Instalações afetadas:** ~70 milhões de domínios rodando cPanel & WHM
 - **WAFs cobertos:** 22 com bypass automático e agente de pesquisa online
@@ -110,6 +110,43 @@ Esses campos são gravados diretamente no arquivo de sessão. Quando relidos pel
 | 132.x | ≤ 11.132.0.28 | **11.132.0.29** |
 | 134.x | ≤ 11.134.0.19 | **11.134.0.20** |
 | 136.x | ≤ 11.136.0.4  | **11.136.0.5**  |
+| 138.x | — (nasceu corrigida) | **11.138.0.0** |
+
+> **Nota:** o NVD registra a CVE-2026-41940 como **CVSS 9.8** e descreve o
+> impacto como "versões do cPanel e WHM posteriores à 11.40". A tabela acima
+> reflete os branches oficialmente suportados e as builds de correção
+> publicadas pela cPanel.
+
+---
+
+## Catálogo de CVEs (`--list-cves`)
+
+A partir da v2.5 a tool traz um catálogo em `cpanelpwn/cves.py` com as CVEs
+relevantes de cPanel & WHM e plugins:
+
+```bash
+python3 cPanelpwn.py --list-cves
+```
+
+| CVE | CVSS | Auth | Componente | Resumo |
+|-----|------|------|-----------|--------|
+| CVE-2026-67401 | 9.9 | conta de e-mail | cPanel | SQLi no EmailTrack → RCE como root |
+| CVE-2026-47365 | 9.9 | pós-auth | WP Toolkit | Argument injection → quebra isolamento entre tenants |
+| **CVE-2026-41940** | **9.8** | **pré-auth** | **WHM** | **Bypass de auth (exploit implementado)** |
+| CVE-2026-48172 | 9.8 | pré-auth | LiteSpeed plugin | Privesc a root, explorado in-the-wild (KEV/CISA) |
+| CVE-2026-93697 | 9.0 | pós-auth | WHM | Stored XSS no Mass Modify Accounts |
+| CVE-2026-93029 | 9.0 | pós-auth | WHM | Stored XSS no Manage SSL Hosts |
+| CVE-2026-65643 | 8.8 | pós-auth | cPanel | Eval injection na Park API (≤ 11.138.0.0) |
+| CVE-2025-66429 | 8.8 | pós-auth | cPanel | Path traversal na Team Manager API |
+| CVE-2026-58047 | n/d | pré-auth | cPanel | HTTP Request Smuggling → vazamento de credenciais |
+| CVE-2026-87899 | n/d | pós-auth | cPanel | Privilégios desnecessários → código como root |
+| CVE-2026-58048 | n/d | pós-auth | cPanel | SQL mode no rename de DB → SQL como root |
+
+Hoje **apenas a CVE-2026-41940 tem cadeia de exploit** (`[EXPLOIT]` no
+catálogo). As demais entram no `--check` e na atribuição por versão; ligar
+exploits novos é o ponto de extensão do registro (`cves.py` + `scanner.py`).
+`--cve <ID>` seleciona a CVE alvo (hoje só aceita a 41940) e `--check`
+passa a reportar no campo `cve` todas as CVEs aplicáveis à versão lida.
 
 ---
 
@@ -122,6 +159,18 @@ python3 cPanelpwn.py --help
 ```
 
 Não requer instalação de pacotes. Apenas Python 3.8+ puro.
+
+Opcionalmente, instale como pacote (cria o comando `cpanelpwn`):
+
+```bash
+pip install .
+cpanelpwn --list-cves
+```
+
+## Licença
+
+Distribuído sob a licença **MIT** (ver `LICENSE`). Uso permitido apenas em
+testes de segurança autorizados e programas de bug bounty.
 
 ---
 
@@ -167,6 +216,24 @@ Ao iniciar, a tool consulta a **NVD API** (`keywordSearch=cpanel` + `whm`, filtr
 - Falsos positivos do **WHMCS** (produto diferente que casa com a keyword "whm") são filtrados automaticamente.
 - Em `-q` (quiet) o feed é suprimido, ideal para pipelines.
 - Fallback: API da CIRCL (`cve.circl.lu`) caso a NVD falhe.
+
+---
+
+## Novidades na v2.5
+
+| Recurso | Descrição |
+|---------|-----------|
+| **Fix crítico — discovery CT** | Faltava `import json` em `discovery.py`: os logs de Certificate Transparency sempre retornavam 0 hostnames e nem chegavam ao fallback do certspotter |
+| **Fix crítico — pesquisa WAF** | Faltava `import quote` em `waf.py`: a pesquisa GitHub Code Search do bypass agent nunca funcionava |
+| **Fix do CVE feed** | A API NVD recusa janelas de datas > 120 dias (HTTP 404). A janela agora é fatiada em blocos de ≤ 120 dias e há backoff entre chamadas (ou `NVD_API_KEY`) |
+| **Catálogo de CVEs** | `cpanelpwn/cves.py` com 11 CVEs de cPanel/WHM + flags `--list-cves` e `--cve` |
+| **Atribuição por versão** | `--check` reporta todas as CVEs aplicáveis à versão lida; branch 138 adicionada |
+| **Metadados corrigidos** | CVSS da CVE-2026-41940 corrigido para **9.8** (antes 10.0) em banner, README e relatórios |
+| **Segurança TLS** | `--verify-tls` e `--cacert FILE` (por padrão continua sem verificar, para alvos autoassinados) |
+| **Segredos** | `--passwd-file` (não expõe a senha em `ps`) e a senha deixou de ser impressa no log |
+| **Robustez** | Regex de token `/cpsess` e de versão flexíveis, suporte a IPv6 no hostname canônico, reuso do opener HTTP |
+| **Empacotamento** | `LICENSE` (MIT), `pyproject.toml` com entry point `cpanelpwn`, lint (`ruff`) no CI |
+| **Testes** | 88 testes (antes 68): discovery, catálogo de CVEs e **E2E** com o `mock_whm.py` |
 
 ---
 
@@ -551,13 +618,18 @@ Scan:
   --user-agent UA         User-Agent customizado para todas as requisições
   --no-research           Desativa pesquisa online de bypass WAF (privacidade)
   --proxy URL             Proxy HTTP (ex: http://127.0.0.1:8080)
+  --verify-tls            Verificar certificado TLS com as CAs do sistema
+  --cacert ARQUIVO        Bundle CA (PEM) para verificar o TLS do alvo
   --check                 Verificação passiva de versão apenas — sem exploit
+  --cve ID                CVE a explorar (padrão: CVE-2026-41940)
+  --list-cves             Listar o catálogo de CVEs conhecidas e sair
 
 Post-Exploit:
   --action AÇÃO           Ação: list | passwd | cmd | exec | info | version |
                                  shell | adduser | addadmin | readfile | dump
   --post-all              Executar --action em TODOS os alvos vulneráveis
   --passwd SENHA          Senha (--action passwd / addadmin)
+  --passwd-file ARQUIVO   Ler a senha de um arquivo (evita expô-la em ps)
   --cmd COMANDO           Comando do SO (--action cmd/exec)
   --new-user USUARIO      Usuário (--action adduser / addadmin)
   --new-domain DOMÍNIO    Domínio (--action adduser)

@@ -13,6 +13,7 @@ Layout do pacote:
   scanner    — check passivo + orquestração do scan principal
   report     — resumo, saída HTML/CSV/JSON
   cve_feed   — feed CVE de arranque + verificação de update da tool
+  cves       — catálogo de CVEs de cPanel/WHM + atribuição por versão
   cli        — parse de argumentos, montagem de alvos, main()
 """
 

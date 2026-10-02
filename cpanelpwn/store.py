@@ -2,7 +2,7 @@
 
 import json, os, threading
 from datetime import datetime
-from typing import Dict, List, Set, Optional
+from typing import Dict, List, Set
 from . import config as cfg
 from .config import C, log
 from .core import ScanCtx

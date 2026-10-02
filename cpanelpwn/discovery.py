@@ -1,10 +1,8 @@
 """Módulo cPanelpwn: discovery."""
 
-import socket, threading
+import socket, json, threading
 from typing import List, Set, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from . import config as cfg
-from . import http
 from .config import C, log
 from .http import _do, R
 
@@ -46,7 +44,7 @@ def crtsh_subdomains(domain: str, timeout: int = 20) -> Set[str]:
     results: Set[str] = set()
 
     # Principal: crt.sh
-    log("DISC", f"Querying crt.sh for *.{domain} ...")
+    log("DISC", f"Consultando crt.sh para *.{domain} ...")
     try:
         resp = _do(f"https://crt.sh/?q=%.{domain}&output=json", timeout=timeout)
         if resp.status == 200 and resp.body:
@@ -111,7 +109,7 @@ def dns_brute(domain: str, wordlist: List[str], threads: int = 100) -> Set[str]:
         except (socket.gaierror, socket.herror):
             pass
 
-    log("DISC", f"DNS brute-force: {len(wordlist)} prefixes, {threads} workers ...")
+    log("DISC", f"DNS brute-force: {len(wordlist)} prefixos, {threads} workers ...")
     with ThreadPoolExecutor(max_workers=threads) as ex:
         futs = [ex.submit(_resolve, w) for w in wordlist]
         for _ in as_completed(futs):
@@ -119,12 +117,12 @@ def dns_brute(domain: str, wordlist: List[str], threads: int = 100) -> Set[str]:
     log("OK", f"DNS brute: {len(results)} hostname(s) vivos")
     return results
 
-# Portas WHM/cPanel a sondear
+# Portas WHM/cPanel a sondar
 WHM_PORTS = [2087, 2083, 2086, 2082]
 
 def probe_whm(host: str, timeout: int = 8) -> Optional[str]:
     """
-    Sondear todos os WHM_PORTS em paralelo; devolver a primeira URL com página
+    Sondar todos os WHM_PORTS em paralelo; devolver a primeira URL com página
     de login cPanel/WHM, ou None. A sondagem paralela evita ficar trabado em portas mortas.
     """
     result: list = []
@@ -167,7 +165,7 @@ def discover_subdomains(domain: str, threads: int, timeout: int,
                             threads=min(threads * 3, 150))
 
     all_hosts: Set[str] = ct_hosts | brute_hosts | {domain}
-    log("DISC", f"Total de hosts únicos a sondear: {len(all_hosts)}")
+    log("DISC", f"Total de hosts únicos a sondar: {len(all_hosts)}")
 
     log("DISC", f"Sondando portas WHM em {len(all_hosts)} host(s) ...")
     live: List[str] = []
@@ -178,9 +176,9 @@ def discover_subdomains(domain: str, threads: int, timeout: int,
         if url:
             with live_lock:
                 live.append(url)
-            log("OK", f"WHM confirmed → {C.GREEN}{url}{C.RESET}")
+            log("OK", f"WHM confirmado → {C.GREEN}{url}{C.RESET}")
         else:
-            log("SKIP", f"Sem WHM em nenhuna porta: {host}")
+            log("SKIP", f"Sem WHM em nenhuma porta: {host}")
 
     with ThreadPoolExecutor(max_workers=threads) as ex:
         futs = [ex.submit(_probe, h) for h in sorted(all_hosts)]

@@ -2,7 +2,7 @@
 """Servidor mock WHM/cPanel para testes E2E de cPanelpwn.
 
 Simula a cadeia completa de exploit CVE-2026-41940:
-  /openid_connect/cpanelid      → 307 → host canónico
+  /openid_connect/cpanelid      → 307 → host canônico
   /login/?login_only=1 (POST)   → 401 + cookie whostmgrsession
   / (com Authorization)         → 307 → /cpsess1234567890/
   /scripts2/listaccts           → 401 Token denied
@@ -35,6 +35,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/scripts2/listaccts":
             self._send(401, b"Token denied - WHM Login required", {"Content-Type": "text/plain"})
         elif path.startswith("/cpsess1234567890/json-api/version"):
+            self._send(200, json.dumps({"version": VERSION, "result": 1}).encode(),
+                       {"Content-Type": "application/json"})
+        elif path == "/json-api/version":
             self._send(200, json.dumps({"version": VERSION, "result": 1}).encode(),
                        {"Content-Type": "application/json"})
         elif path == "/login":

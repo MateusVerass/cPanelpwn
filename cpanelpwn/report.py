@@ -3,10 +3,7 @@
 import os, json, csv
 import html as _html_mod
 from datetime import datetime
-from typing import List
 from . import config as cfg
-from . import core
-from . import store
 import sys
 from .config import C, VERSION, log
 from .core import is_version_patched
@@ -61,7 +58,7 @@ def print_summary(elapsed: float, total: int):
 
     # ── Contagem de achados ───────────────────────────────────────────
     p(f"  {C.RED}{C.BOLD}{'─'*W}{C.RESET}")
-    p(f"  {C.RED}{C.BOLD}⚡  {vuln_n} ALVO(S) COMPROMETIDO(S)  —  CVE-2026-41940  —  CVSS 10.0{C.RESET}")
+    p(f"  {C.RED}{C.BOLD}⚡  {vuln_n} ALVO(S) COMPROMETIDO(S)  —  CVE-2026-41940  —  CVSS 9.8{C.RESET}")
     p(f"  {C.RED}{C.BOLD}{'─'*W}{C.RESET}")
     p()
 
@@ -138,7 +135,7 @@ def _html_css() -> str:
         "grid-template-columns: 1fr 1fr; gap: 1rem; }"
         ".field label { color: #8b949e; font-size: 0.72rem; "
         "text-transform: uppercase; display: block; margin-bottom: 2px; }"
-        ".field value { color: #e6edf3; font-family: monospace; "
+        ".field .value { color: #e6edf3; font-family: monospace; "
         "font-size: 0.82rem; word-break: break-all; }"
         ".evidence { grid-column: 1 / -1; }"
         ".evidence pre { background: #0d1117; padding: 0.8rem; border-radius: 4px; "
@@ -164,19 +161,19 @@ def save_html_report(findings: list, out_file: str, elapsed: float, total: int):
             '<div class="finding-header">'
             f'<div class="finding-title">'
             f'<span class="badge badge-crit">CRÍTICO</span>'
-            f'<span class="badge badge-cvss">CVSS {e(str(f.get("cvss","10.0")))}</span>'
+            f'<span class="badge badge-cvss">CVSS {e(str(f.get("cvss","9.8")))}</span>'
             f'{waf_badge} {e(f.get("title",""))}</div>'
             f'<div class="finding-target">{e(f.get("target",""))}</div>'
             '</div>'
             '<div class="finding-body">'
-            f'<div class="field"><label>Versão</label><value>{e(str(f.get("version","")))}</value></div>'
-            f'<div class="field"><label>Token</label><value>{e(str(f.get("token","")))}</value></div>'
-            f'<div class="field"><label>Canónico</label><value>{e(str(f.get("canonical","")))}</value></div>'
-            f'<div class="field"><label>Timestamp</label><value>{e(str(f.get("timestamp","")))}</value></div>'
+            f'<div class="field"><label>Versão</label><span class="value">{e(str(f.get("version","")))}</span></div>'
+            f'<div class="field"><label>Token</label><span class="value">{e(str(f.get("token","")))}</span></div>'
+            f'<div class="field"><label>Canônico</label><span class="value">{e(str(f.get("canonical","")))}</span></div>'
+            f'<div class="field"><label>Timestamp</label><span class="value">{e(str(f.get("timestamp","")))}</span></div>'
             f'<div class="field"><label>API URL</label>'
-            f'<value><a href="{e(str(f.get("api_url","")))}">{e(str(f.get("api_url","")))}</a></value></div>'
+            f'<span class="value"><a href="{e(str(f.get("api_url","")))}">{e(str(f.get("api_url","")))}</a></span></div>'
             f'<div class="field"><label>Sessão</label>'
-            f'<value>{e(str(f.get("session",""))[:70])}...</value></div>'
+            f'<span class="value">{e(str(f.get("session",""))[:70])}...</span></div>'
             f'<div class="field evidence"><label>Evidencia</label>'
             f'<pre>{e(str(f.get("evidence",""))[:500])}</pre></div>'
             '</div></div>'
@@ -207,7 +204,7 @@ def save_html_report(findings: list, out_file: str, elapsed: float, total: int):
         + cards +
         "\n<footer>cPanelpwn "
         f"v{VERSION} &nbsp;|&nbsp; CVE-2026-41940 &nbsp;|&nbsp; "
-        "CVSS 10.0 &nbsp;|&nbsp; Somente para testes de penetração autorizados</footer>\n"
+        "CVSS 9.8 &nbsp;|&nbsp; Somente para testes de penetração autorizados</footer>\n"
         "</body>\n</html>"
     )
 
