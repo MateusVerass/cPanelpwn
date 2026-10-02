@@ -8,8 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import config as cfg
 from . import cves
 from .config import C, VERSION, banner, log
-from .core import ScanCtx, parse_target
-from .discovery import discover_subdomains, load_wordlist
+from .core import ScanCtx, parse_target, _has_explicit_port
+from .discovery import discover_subdomains, load_wordlist, probe_whm
 from .parsers import is_excluded, load_exclude, load_list_file
 from .cve_feed import print_cve_feed
 from .scanner import check_target, scan
@@ -51,7 +51,7 @@ def validate_args(args, p):
         errs.append("--post-all exige --action")
 
     cve_id = getattr(args, "cve", None)
-    if cve_id:
+    if cve_id and not getattr(args, "smuggle_check", False):
         if not cves.get(cve_id):
             errs.append(f"--cve {cve_id} não consta no catálogo (ver --list-cves)")
         elif cve_id.upper().strip() not in cves.EXPLOITABLE:
@@ -167,6 +167,9 @@ Exemplos:
                     help="Bundle CA (PEM) para verificar o certificado TLS do alvo")
     sg.add_argument("--check",              action="store_true",
                     help="Somente verificação passiva de versão — sem tentativa de exploit")
+    sg.add_argument("--smuggle-check",      dest="smuggle_check", action="store_true",
+                    help="Detectar HTTP request smuggling CL.TE/TE.CL "
+                         "(CVE-2026-58047) — requer alvo único (-u)")
     sg.add_argument("--cve",                default=None,
                     help="CVE a explorar (padrão: CVE-2026-41940). Ver --list-cves")
     sg.add_argument("--list-cves",          dest="list_cves", action="store_true",
@@ -344,6 +347,35 @@ Exemplos:
         if args.output and STORE.all():
             save_output(STORE.all(), args.output, elapsed=0.0,
                         total=len(STORE.all()))
+        sys.exit(0)
+
+    # ── Modo smuggling (CVE-2026-58047, alvo único) ─────────────
+    if getattr(args, "smuggle_check", False):
+        if len(targets) != 1:
+            p.error("--smuggle-check requer um alvo único (-u)")
+        from .smuggling import detect as smuggle_detect
+        tg = targets[0]
+        if "://" not in tg:
+            tg = "https://" + tg
+        if not _has_explicit_port(tg):
+            _, _host, _ = parse_target(tg)
+            found = probe_whm(_host, timeout=cfg._TIMEOUT_PROBE)
+            if found:
+                tg = found
+        scheme, host, port = parse_target(tg)
+        res = smuggle_detect(scheme, host, port, timeout=args.timeout)
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        if args.output:
+            save_output([{
+                "severity":  "HIGH" if res["vulnerable"] else "INFO",
+                "title":     "CVE-2026-58047 — HTTP request smuggling (CL.TE/TE.CL)",
+                "target":    res["target"],
+                "cve":       "CVE-2026-58047",
+                "cvss":      f"{cves.cvss_of('CVE-2026-58047', 5.6):.1f}",
+                "technique": res.get("technique", ""),
+                "evidence":  json.dumps(res.get("findings", []), ensure_ascii=False)[:400],
+                "timestamp": datetime.now().isoformat(),
+            }], args.output)
         sys.exit(0)
 
     # ── Modo check (passivo, sem exploit) ───────────────────────

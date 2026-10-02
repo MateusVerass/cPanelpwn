@@ -136,17 +136,29 @@ python3 cPanelpwn.py --list-cves
 | CVE-2026-48172 | 9.8 | pré-auth | LiteSpeed plugin | Privesc a root, explorado in-the-wild (KEV/CISA) |
 | CVE-2026-93697 | 9.0 | pós-auth | WHM | Stored XSS no Mass Modify Accounts |
 | CVE-2026-93029 | 9.0 | pós-auth | WHM | Stored XSS no Manage SSL Hosts |
-| CVE-2026-65643 | 8.8 | pós-auth | cPanel | Eval injection na Park API (≤ 11.138.0.0) |
+| CVE-2026-65643 | 8.8 | pós-auth | cPanel | Eval injection na Park API |
 | CVE-2025-66429 | 8.8 | pós-auth | cPanel | Path traversal na Team Manager API |
-| CVE-2026-58047 | n/d | pré-auth | cPanel | HTTP Request Smuggling → vazamento de credenciais |
-| CVE-2026-87899 | n/d | pós-auth | cPanel | Privilégios desnecessários → código como root |
-| CVE-2026-58048 | n/d | pós-auth | cPanel | SQL mode no rename de DB → SQL como root |
+| CVE-2026-58048 | 9.4 | pós-auth | cPanel | SQL mode no rename de DB → SQL como root |
+| CVE-2026-87899 | 9.4 | pós-auth | cPanel | Privilégios desnecessários → código como root |
+| CVE-2026-58047 | 5.6 | pré-auth | cPanel | HTTP Request Smuggling → vazamento de credenciais |
+
+As faixas de versão afetadas de cada CVE vêm dos registros CVE (HackerOne/MITRE)
+e são usadas para atribuição automática:
+
+```bash
+# O --check diz quais CVEs do catálogo afetam a versão lida
+python3 cPanelpwn.py -u https://alvo.com:2087 --check
+# → target, version, patched, cves[...]
+
+# Detecção ativa do smuggling CL.TE/TE.CL (CVE-2026-58047, alvo único)
+python3 cPanelpwn.py -u https://alvo.com:2087 --smuggle-check
+```
 
 Hoje **apenas a CVE-2026-41940 tem cadeia de exploit** (`[EXPLOIT]` no
-catálogo). As demais entram no `--check` e na atribuição por versão; ligar
-exploits novos é o ponto de extensão do registro (`cves.py` + `scanner.py`).
-`--cve <ID>` seleciona a CVE alvo (hoje só aceita a 41940) e `--check`
-passa a reportar no campo `cve` todas as CVEs aplicáveis à versão lida.
+catálogo). A CVE-2026-58047 tem **detecção** (`--smuggle-check`); as demais
+entram no `--check` e na atribuição por versão. Ligar exploits novos é o
+ponto de extensão do registro (`cves.py` + `scanner.py`).
+`--cve <ID>` seleciona a CVE alvo (hoje só aceita a 41940).
 
 ---
 
@@ -227,13 +239,15 @@ Ao iniciar, a tool consulta a **NVD API** (`keywordSearch=cpanel` + `whm`, filtr
 | **Fix crítico — pesquisa WAF** | Faltava `import quote` em `waf.py`: a pesquisa GitHub Code Search do bypass agent nunca funcionava |
 | **Fix do CVE feed** | A API NVD recusa janelas de datas > 120 dias (HTTP 404). A janela agora é fatiada em blocos de ≤ 120 dias e há backoff entre chamadas (ou `NVD_API_KEY`) |
 | **Catálogo de CVEs** | `cpanelpwn/cves.py` com 11 CVEs de cPanel/WHM + flags `--list-cves` e `--cve` |
+| **Faixas de versão reais** | Atribuição por versão usando os intervalos dos registros CVE (HackerOne/MITRE) |
+| **Detecção de smuggling** | `--smuggle-check` (CL.TE/TE.CL, CVE-2026-58047) via sockets crus |
 | **Atribuição por versão** | `--check` reporta todas as CVEs aplicáveis à versão lida; branch 138 adicionada |
 | **Metadados corrigidos** | CVSS da CVE-2026-41940 corrigido para **9.8** (antes 10.0) em banner, README e relatórios |
 | **Segurança TLS** | `--verify-tls` e `--cacert FILE` (por padrão continua sem verificar, para alvos autoassinados) |
 | **Segredos** | `--passwd-file` (não expõe a senha em `ps`) e a senha deixou de ser impressa no log |
 | **Robustez** | Regex de token `/cpsess` e de versão flexíveis, suporte a IPv6 no hostname canônico, reuso do opener HTTP |
 | **Empacotamento** | `LICENSE` (MIT), `pyproject.toml` com entry point `cpanelpwn`, lint (`ruff`) no CI |
-| **Testes** | 88 testes (antes 68): discovery, catálogo de CVEs e **E2E** com o `mock_whm.py` |
+| **Testes** | 93 testes (antes 68): discovery, catálogo de CVEs, smuggling e **E2E** com o `mock_whm.py` |
 
 ---
 
@@ -621,6 +635,8 @@ Scan:
   --verify-tls            Verificar certificado TLS com as CAs do sistema
   --cacert ARQUIVO        Bundle CA (PEM) para verificar o TLS do alvo
   --check                 Verificação passiva de versão apenas — sem exploit
+  --smuggle-check         Detectar HTTP request smuggling CL.TE/TE.CL
+                          (CVE-2026-58047) — requer alvo único (-u)
   --cve ID                CVE a explorar (padrão: CVE-2026-41940)
   --list-cves             Listar o catálogo de CVEs conhecidas e sair
 

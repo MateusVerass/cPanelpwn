@@ -14,6 +14,7 @@ Layout do pacote:
   report     — resumo, saída HTML/CSV/JSON
   cve_feed   — feed CVE de arranque + verificação de update da tool
   cves       — catálogo de CVEs de cPanel/WHM + atribuição por versão
+  smuggling  — detecção de HTTP request smuggling (CVE-2026-58047)
   cli        — parse de argumentos, montagem de alvos, main()
 """
 

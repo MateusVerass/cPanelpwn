@@ -6,20 +6,29 @@ Serve três propósitos:
   * metadados (CVSS, componente, referência) usados nos relatórios — evita
     espalhar números mágicos pelo código;
   * atribuição de versão: dado um `11.x.y.z`, dizer quais CVEs do catálogo
-    provavelmente afetam a instalação (`cves_affecting`);
+    afetam a instalação (`cves_affecting`);
   * registro de exploits: `EXPLOITABLE` marca as CVEs com módulo de exploit
     implementado (hoje só a CVE-2026-41940). É o ponto de extensão para
     novas cadeias.
 
-Os dados de versões corrigidas vêm dos advisories oficiais do cPanel
-(support.cpanel.net) e do changelog. Quando o advisory não publica faixas
-de versão, `fixed` fica `None` e a CVE só é reportada no catálogo
-(`--list-cves`), sem atribuição automática.
+As faixas de versão vêm dos registros CVE (HackerOne/MITRE) e dos advisories
+oficiais do cPanel. Cada CVE afetada é uma lista de intervalos
+`(piso_inclusivo, teto_exclusivo)`; `None` significa aberto. As faixas são
+ancoradas ao ramo (piso explícito), ex.:
+`((110, 0, 0), (110, 0, 137))` = "ramo 110, builds abaixo de 110.0.137".
+
+Sobre o CVSS: quando há score v3.x no NVD, ele é preferido; caso contrário
+usa-se o score v4.0 publicado. Como as escalas v3 e v4 não são diretamente
+comparáveis, o número serve para ordenar/priorizar no relatório, não como
+métrica formal.
 """
 
 from typing import Dict, List, Optional, NamedTuple
 
 from .core import parse_cpanel_version
+
+# Um intervalo (piso_inclusivo, teto_exclusivo); None = aberto.
+Range = tuple
 
 
 class CVE(NamedTuple):
@@ -29,10 +38,11 @@ class CVE(NamedTuple):
     auth: str               # "pré-auth", "pós-auth", "conta de e-mail"...
     summary: str
     reference: str
-    # {branch_str: (patched_patch, patched_build)} — None quando desconhecido.
+    # Intervalos de versões afetadas (piso inclusivo, teto exclusivo).
+    affected_ranges: Optional[List[Range]] = None
+    # Tabela {branch_str: (patched_patch, patched_build)} — usada quando a
+    # atribuição é por build de ramo (ex.: CVE-2026-41940).
     fixed: Optional[Dict[str, tuple]] = None
-    # Versão máxima afetada (inclusive), ex.: (138, 0, 0) para "11.138.0.0 e anteriores".
-    max_affected: Optional[tuple] = None
     exploitable: bool = False
 
 
@@ -45,28 +55,70 @@ CVES: List[CVE] = [
         summary="Bypass de autenticação no fluxo de login via injeção CRLF no "
                 "arquivo de sessão — acesso root ao WHM sem credenciais.",
         reference="https://support.cpanel.net/hc/en-us/articles/40073787579671",
-        fixed={"110": (0, 97), "118": (0, 63), "126": (0, 54),
-               "132": (0, 29), "134": (0, 20), "136": (0, 5),
-               "138": (0, 0)},
+        affected_ranges=[
+            ((40, 0, 0), (86, 0, 41)),
+            ((88, 0, 0), (94, 0, 28)),
+            ((96, 0, 0), (102, 0, 39)),
+            ((104, 0, 0), (110, 0, 97)),
+            ((112, 0, 0), (118, 0, 63)),
+            ((120, 0, 0), (124, 0, 35)),
+            ((126, 0, 0), (126, 0, 54)),
+            ((128, 0, 0), (130, 0, 19)),
+            ((132, 0, 0), (132, 0, 29)),
+            ((134, 0, 0), (134, 0, 20)),
+            ((136, 0, 0), (136, 0, 5)),
+        ],
         exploitable=True,
     ),
     CVE(
         id="CVE-2026-58047",
-        cvss=None,
+        cvss=5.6,
         component="cPanel",
         auth="pré-auth",
-        summary="HTTP Request Smuggling no cPanel que pode vazar credenciais.",
+        summary="HTTP request smuggling (CWE-444, CL/TE) no cPanel que pode "
+                "vazar credenciais de outros usuários.",
         reference="https://support.cpanel.net/hc/en-us/articles/42285024734743",
+        affected_ranges=[
+            ((110, 0, 0), (110, 0, 137)),
+            ((118, 0, 0), (118, 0, 71)),
+            ((126, 0, 0), (126, 0, 78)),
+            ((134, 0, 0), (134, 0, 48)),
+            ((136, 0, 0), (136, 0, 32)),
+            ((137, 0, 0), (137, 9999, 99)),
+        ],
+    ),
+    CVE(
+        id="CVE-2026-58048",
+        cvss=9.4,
+        component="cPanel",
+        auth="pós-auth",
+        summary="Preservação incorreta do SQL mode ao renomear bancos permite "
+                "execução de SQL em contexto root.",
+        reference="https://support.cpanel.net/hc/en-us/articles/42285024734743",
+        affected_ranges=[
+            ((110, 0, 0), (110, 0, 137)),
+            ((118, 0, 0), (118, 0, 71)),
+            ((126, 0, 0), (126, 0, 78)),
+            ((134, 0, 0), (134, 0, 48)),
+            ((136, 0, 0), (136, 0, 32)),
+            ((137, 0, 0), (137, 9999, 99)),
+        ],
     ),
     CVE(
         id="CVE-2026-65643",
         cvss=8.8,
         component="cPanel",
         auth="pós-auth",
-        summary="Eval injection na Park API do cPanel (≤ 11.138.0.0) permite "
-                "código arbitrário como root.",
+        summary="Eval injection na Park API do cPanel permite código "
+                "arbitrário como root.",
         reference="https://support.cpanel.net/hc/en-us/articles/42959571221527",
-        max_affected=(138, 0, 0),
+        affected_ranges=[
+            ((110, 0, 0), (110, 0, 141)),
+            ((112, 0, 0), (134, 0, 53)),
+            ((136, 0, 0), (136, 0, 37)),
+            ((138, 0, 0), (138, 0, 2)),
+            ((138, 1, 0), (138, 1, 7)),
+        ],
     ),
     CVE(
         id="CVE-2026-67401",
@@ -76,24 +128,27 @@ CVES: List[CVE] = [
         summary="SQLi na funcionalidade EmailTrack permite RCE como root a "
                 "partir de uma conta com e-mail habilitado.",
         reference="https://support.cpanel.net/hc/en-us/articles/43187903921559",
+        affected_ranges=[
+            ((110, 0, 0), (110, 0, 143)),
+            ((134, 0, 0), (134, 0, 55)),
+            ((136, 0, 0), (136, 0, 39)),
+            ((138, 0, 0), (138, 0, 4)),
+            ((138, 1, 0), (138, 1, 9)),
+        ],
     ),
     CVE(
         id="CVE-2026-87899",
-        cvss=None,
+        cvss=9.4,
         component="cPanel",
         auth="pós-auth",
         summary="Execução com privilégios desnecessários permite código "
                 "arbitrário como root.",
         reference="https://support.cpanel.net/hc/en-us/articles/43591715125271",
-    ),
-    CVE(
-        id="CVE-2026-58048",
-        cvss=None,
-        component="cPanel",
-        auth="pós-auth",
-        summary="Preservação incorreta do SQL mode ao renomear bancos permite "
-                "execução de SQL em contexto root.",
-        reference="https://docs.cpanel.net/changelogs/138-change-log",
+        affected_ranges=[
+            ((120, 0, 0), (134, 0, 57)),
+            ((136, 0, 0), (136, 0, 41)),
+            ((138, 0, 0), (138, 0, 8)),
+        ],
     ),
     CVE(
         id="CVE-2026-93697",
@@ -103,6 +158,12 @@ CVES: List[CVE] = [
         summary="Stored XSS na interface Mass Modify Accounts do WHM permite "
                 "execução arbitrária de código.",
         reference="https://docs.cpanel.net/changelogs/138-change-log/#138011",
+        affected_ranges=[
+            ((110, 0, 0), (110, 0, 148)),
+            ((134, 0, 0), (134, 0, 61)),
+            ((136, 0, 0), (136, 0, 45)),
+            ((138, 0, 0), (138, 0, 11)),
+        ],
     ),
     CVE(
         id="CVE-2026-93029",
@@ -112,16 +173,12 @@ CVES: List[CVE] = [
         summary="Stored XSS na interface Manage SSL Hosts do WHM permite "
                 "execução arbitrária de código.",
         reference="https://docs.cpanel.net/changelogs/138-change-log/#138011",
-    ),
-    CVE(
-        id="CVE-2026-48172",
-        cvss=9.8,
-        component="LiteSpeed plugin",
-        auth="pré-auth",
-        summary="LiteSpeed User-End cPanel Plugin < 2.4.5 permite escalar "
-                "privilégios (possivelmente a root). Explorado in-the-wild; "
-                "consta no catálogo KEV da CISA.",
-        reference="https://blog.litespeedtech.com/2026/05/21/security-update-for-litespeed-cpanel-plugin/",
+        affected_ranges=[
+            ((110, 0, 0), (110, 0, 148)),
+            ((134, 0, 0), (134, 0, 61)),
+            ((136, 0, 0), (136, 0, 45)),
+            ((138, 0, 0), (138, 0, 11)),
+        ],
     ),
     CVE(
         id="CVE-2026-47365",
@@ -131,6 +188,16 @@ CVES: List[CVE] = [
         summary="Argument injection no WordPress Toolkit < 6.11.0 permite "
                 "burlar o isolamento entre tenants.",
         reference="https://support.cpanel.net/hc/en-us/articles/40073787579671",
+    ),
+    CVE(
+        id="CVE-2026-48172",
+        cvss=9.8,
+        component="LiteSpeed plugin",
+        auth="pré-auth",
+        summary="LiteSpeed User-End cPanel Plugin pode escalar privilégios "
+                "(possivelmente a root). Explorado in-the-wild; consta no "
+                "catálogo KEV da CISA.",
+        reference="https://blog.litespeedtech.com/2026/05/21/security-update-for-litespeed-cpanel-plugin/",
     ),
     CVE(
         id="CVE-2025-66429",
@@ -166,26 +233,38 @@ def cvss_of(cve_id: str, default: Optional[float] = None) -> Optional[float]:
     return c.cvss if (c and c.cvss is not None) else default
 
 
-def cves_affecting(version: str) -> List[CVE]:
-    """CVEs do catálogo cujo range de versão indica que `version` é afetada.
+def _in_range(v: tuple, lo: Optional[tuple], hi: Optional[tuple]) -> bool:
+    if lo is not None and v < lo:
+        return False
+    if hi is not None and v >= hi:
+        return False
+    return True
 
-    Só devolve CVEs com faixa conhecida (tabela `fixed` ou `max_affected`);
-    CVEs sem faixa publicada não entram (apareceriam como falso positivo).
-    """
+
+def is_affected(version: str, cve: CVE) -> bool:
+    """True se `version` cai em algum intervalo afetado (ou tabela por ramo)."""
     parsed = parse_cpanel_version(version)
     if not parsed:
+        return False
+    if cve.affected_ranges:
+        return any(_in_range(parsed, lo, hi) for lo, hi in cve.affected_ranges)
+    if cve.fixed:
+        key = str(parsed[0])
+        if key in cve.fixed:
+            return parsed[1:] < cve.fixed[key]
+    return False
+
+
+def cves_affecting(version: str) -> List[CVE]:
+    """CVEs do catálogo que afetam `version`.
+
+    Só devolve CVEs com faixa de versão conhecida; as sem faixa publicada
+    (ex.: plugins sem versão mapeável) não entram, para não gerar falso
+    positivo.
+    """
+    if not parse_cpanel_version(version):
         return []
-    branch, patch, build = parsed
-    hit: List[CVE] = []
-    for c in CVES:
-        if c.fixed:
-            key = str(branch)
-            if key in c.fixed and (patch, build) < c.fixed[key]:
-                hit.append(c)
-        elif c.max_affected is not None:
-            if (branch, patch, build) <= c.max_affected:
-                hit.append(c)
-    return hit
+    return [c for c in CVES if is_affected(version, c)]
 
 
 def print_catalog(log_fn):
@@ -196,4 +275,3 @@ def print_catalog(log_fn):
         mark = "[EXPLOIT]" if c.exploitable else "[  info ]"
         log_fn("INFO", f"  {c.id:16} CVSS {score:>4}  {mark}  "
                        f"{c.component:24} {c.auth:14} {c.summary[:70]}")
-
