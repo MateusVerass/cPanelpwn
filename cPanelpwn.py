@@ -3,7 +3,7 @@
 """
 cPanelpwn.py — Scanner de Bypass de Autenticação cPanel & WHM (CVE-2026-41940)
 Autor    : cPanelpwn
-Versão   : 2.4
+Versão   : 2.5
 
 CVE-2026-41940: Injeção CRLF no Session-File → Bypass de Autenticação Root WHM
   saveSession() chama filter_sessiondata() DEPOIS de escrever o session file.
@@ -27,6 +27,21 @@ Post-Exploit:
   --action info     → Dump de info do servidor (hostname, load, disco, etc.)
   --action shell    → Shell WHM interativo
   --action dump     → Dump massivo: contas + shadow + chaves SSH + histórico bash
+
+Novo em v2.5 — correções, catálogo de CVEs e hardening:
+  Fix crítico     → discovery de CT logs (faltava import json; sempre 0 hostnames)
+  Fix crítico     → pesquisa GitHub/WAF no bypass agent (faltava import quote)
+  Fix CVE feed    → janela da NVD fatiada em blocos de ≤120 dias (limite da API)
+  Catálogo CVEs   → cves.py com 11 CVEs de cPanel/WHM + --list-cves / --cve
+  Faixas de versão→ atribuição por versão com intervalos reais dos registros CVE
+  Smuggling       → --smuggle-check detecta CL.TE/TE.CL (CVE-2026-58047) via socket cru
+  Smuggling conf. → --smuggle-confirm confirma a desincronização real (opt-in)
+  Pós-exploit     → --action cves inventaria CVEs remanescentes no alvo comprometido
+  Metadados       → CVSS real (9.8) e branches 138; atribuição de CVEs por versão
+  Segurança       → --verify-tls / --cacert; --passwd-file; senha não vai mais ao log
+  Robustez        → regex de token/versão flexíveis, IPv6, reuso de opener HTTP
+  Limpeza         → ~30 imports mortos removidos; textos 100% PT-BR
+  Testes          → novos testes de discovery, cves, smuggling, postexploit e E2E
 
 Novo em v2.4 — pacote modular, testes, CI, features de pipeline:
   Refactor        → split em pacote cpanelpwn/ (config, http, waf, exploit,

@@ -1,10 +1,8 @@
 """Módulo cPanelpwn: parsers."""
 
-import os, json
+import json
 import xml.etree.ElementTree as ET
 from typing import List, Set
-from . import config as cfg
-from . import core
 from .config import log
 from .core import parse_target
 

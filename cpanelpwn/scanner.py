@@ -1,24 +1,19 @@
 """Módulo cPanelpwn: scanner."""
 
-import re, json, threading, time
-from typing import Optional, Dict, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from . import config as cfg
-from . import http
-from . import core
-from . import discovery
-from . import waf
-from . import exploit
-from . import actions
-from . import store
+import re, json, time
+from typing import Optional
 from datetime import datetime
+from . import config as cfg
+from . import cves
 from .config import C, log
 from .core import (ScanCtx, _has_explicit_port, build_url, is_version_patched, parse_target)
 from .discovery import WHM_PORTS, probe_whm
-from .exploit import (stage0_canonical, stage1_preauth, stage2_inject, stage3_propagate, stage4_verify)
+from .exploit import (stage0_canonical, stage1_preauth, stage2_inject,
+                      stage3_propagate, stage4_verify)
 from .http import _do
 from .store import CTX_MAP, CTX_MAP_LOCK, Progress, STORE
-from .waf import detect_waf, get_bypass_delay, get_bypass_headers, waf_bypass_agent
+from .waf import (detect_waf, get_bypass_delay, get_bypass_headers,
+                  waf_bypass_agent)
 from .actions import run_action
 
 # ══════════════════════════════════════════════════════════════
@@ -46,6 +41,7 @@ def check_target(target: str) -> dict:
         patched = is_version_patched(version)
         result["version"] = version
         result["patched"] = patched
+        result["cves"] = [c.id for c in cves.cves_affecting(version)]
         if patched is False:
             log("HIGH", f"VULNERABLE v{version} — unpatched", target)
         elif patched is True:
@@ -54,7 +50,7 @@ def check_target(target: str) -> dict:
             log("WARN",  f"Rama desconhecida v{version}", target)
         return result
 
-    # Fallback: extraer versão da página de login
+    # Fallback: extrair versão da página de login
     url2  = build_url(scheme, host, port, "/login")
     resp2 = _do(url2, timeout=cfg._TIMEOUT_PROBE, follow=False)
     body2 = resp2.body or ""
@@ -67,10 +63,11 @@ def check_target(target: str) -> dict:
         patched = is_version_patched(version)
         result["version"] = version
         result["patched"] = patched
-        log("INFO", f"Versão desde página de login: v{version}", target)
+        result["cves"] = [c.id for c in cves.cves_affecting(version)]
+        log("INFO", f"Versão a partir da página de login: v{version}", target)
     else:
-        result["error"] = f"HTTP {resp.status} — versão não exposta"
-        log("WARN", f"Não foi possível determinar a versão (HTTP {resp.status})", target)
+        result["error"] = f"HTTP {resp2.status} — versão não exposta"
+        log("WARN", f"Não foi possível determinar a versão (HTTP {resp2.status})", target)
 
     return result
 
@@ -108,7 +105,7 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
             log("OK", f"WHM encontrado em {C.GREEN}{found}{C.RESET}", _host)
         else:
             target = f"https://{_host}:2087"
-            log("WARN", f"Nenhuma porta WHM respondeu — tentando 2087", _host)
+            log("WARN", "Nenhuma porta WHM respondeu — tentando 2087", _host)
 
     result = {"target": target, "vuln": False}
 
@@ -214,7 +211,7 @@ def scan(target: str, args, progress: Optional[Progress] = None) -> dict:
         "api_url":   build_url(scheme, host, port, f"{token}/json-api/version"),
         "evidence":  verify.get("body", "")[:400],
         "cve":       "CVE-2026-41940",
-        "cvss":      "10.0",
+        "cvss":      f"{cves.cvss_of('CVE-2026-41940', 9.8):.1f}",
         "waf":       result.get("waf", ""),
         "timestamp": datetime.now().isoformat(),
     }

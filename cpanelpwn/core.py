@@ -1,7 +1,7 @@
 """Módulo cPanelpwn: core."""
 
 import re
-from typing import NamedTuple, Optional, Dict, List, Set
+from typing import NamedTuple, Optional, Dict
 from urllib.parse import urlsplit
 
 # ══════════════════════════════════════════════════════════════
@@ -51,6 +51,8 @@ PATCHED: Dict[str, tuple] = {
     "132": (0, 29),
     "134": (0, 20),
     "136": (0,  5),
+    # A rama 138 nasceu depois da correção da CVE-2026-41940 — já patcheada.
+    "138": (0,  0),
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -80,12 +82,27 @@ def build_url(scheme, host, port, path):
         return f"{scheme}://{host}{path}"
     return f"{scheme}://{host}:{port}{path}"
 
-def is_version_patched(version: str) -> Optional[bool]:
-    m = re.match(r"11\.(\d+)\.(\d+)\.(\d+)", version)
+def parse_cpanel_version(version: str) -> Optional[tuple]:
+    """Devolver (branch, patch, build) de uma versão 11.x.y.z, ou None."""
+    m = re.match(r"11\.(\d+)\.(\d+)\.(\d+)", version or "")
     if not m:
         return None
-    branch, patch, build = m.group(1), int(m.group(2)), int(m.group(3))
-    if branch in PATCHED:
-        patched_patch, patched_build = PATCHED[branch]
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+
+def is_version_patched(version: str,
+                       table: Optional[Dict[str, tuple]] = None) -> Optional[bool]:
+    """True se a versão já contém a correção, False se vulnerável, None se desconhecida.
+
+    `table` permite usar a tabela de patches de uma CVE específica (registro de CVEs).
+    """
+    parsed = parse_cpanel_version(version)
+    if not parsed:
+        return None
+    branch, patch, build = parsed
+    table = PATCHED if table is None else table
+    key = str(branch)
+    if key in table:
+        patched_patch, patched_build = table[key]
         return (patch, build) >= (patched_patch, patched_build)
     return None

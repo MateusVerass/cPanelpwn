@@ -13,7 +13,16 @@ brasileiro (PT-BR).**
 - Nomes de flags, variáveis, funções e identificadores permanecem em inglês
   (código é código); só os textos legíveis mudam.
 - Antes de terminar uma edição, verificar com:
-  `grep -rnE "ñ|ción|archivo|fuente|puerto|acción|versión|Usage:|Error:" cpanelpwn/ tests/ README.md`
+  ```
+  # termos estrangeiros que já apareceram no código (espanhol/inglês)
+  grep -rnE "Ejecut|Creando|Agregando|Recopil|Escriba|LLAMADOR|canónico|canónica|Perfiles|Provando|sensibles" \
+    cpanelpwn/ tests/ README.md
+  # lint de imports/nomes (pyflakes via ruff)
+  ruff check cpanelpwn tests cPanelpwn.py
+  ```
+  Observação: o grep de "Error:" foi removido — casava com nomes de exceção
+  do Python (`JSONDecodeError`, `FileNotFoundError`, ...) e não pegava os
+  estrangeirismos reais. A lista acima cobre os casos que já ocorreram.
 
 ## Stack
 

@@ -1,11 +1,9 @@
 """Módulo cPanelpwn: cve_feed."""
 
-import os, re, json
+import os, re, json, time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List
 from . import config as cfg
-from . import http
-import time
 from .config import C, VERSION, log
 from .http import _do
 
@@ -16,26 +14,46 @@ from .http import _do
 # ~/.cache/cpanelpwn/cve_feed.json para que as execuções repetidas sejam silenciosas.
 CVE_FEED_TTL = 24 * 3600
 CVE_FEED_MAX = 8
+# A API NVD v2.0 recusa (HTTP 404) janelas de datas maiores que 120 dias.
+NVD_MAX_WINDOW_DAYS = 120
+
+
+def _nvd_request_url(kw: str, start, end) -> str:
+    fmt = "%Y-%m-%dT%H:%M:%S.000"
+    return ("https://services.nvd.nist.gov/rest/json/cves/2.0"
+            f"?keywordSearch={kw}"
+            f"&pubStartDate={start.strftime(fmt)}"
+            f"&pubEndDate={end.strftime(fmt)}"
+            f"&resultsPerPage=100")
+
+
+def _date_windows(days: int):
+    """Dividir a janela pedida em fatias de no máximo 120 dias (limite da NVD)."""
+    now  = datetime.now(timezone.utc).replace(tzinfo=None)
+    todo = max(1, int(days))
+    out  = []
+    end  = now
+    while todo > 0:
+        span  = min(todo, NVD_MAX_WINDOW_DAYS)
+        start = end - timedelta(days=span)
+        out.append((start, end))
+        end   = start
+        todo -= span
+    return out
+
 
 def cve_feed_sources(days: int) -> List[tuple]:
     """Construir lista de fontes do feed para a janela dada (em dias).
 
-    Principal: NVD API v2.0 com pubStartDate/pubEndDate para que só se
-    devolvam CVEs publicadas dentro da janela (a pesquisa por keyword
-    só ordena por relevância e tira entradas de há décadas).
-    Fallback: pesquisa CIRCL (dava 404 ao momento de escrever; se mantém por resiliência).
+    Principal: NVD API v2.0 com pubStartDate/pubEndDate, fatiada em janelas de
+    até 120 dias (limite imposto pela API). Fallback: CIRCL, mantido por
+    resiliência (a API pública mudou e hoje pode devolver HTML — o parser
+    descarta respostas não-JSON silenciosamente).
     """
-    end   = datetime.now(timezone.utc).replace(tzinfo=None)
-    start = end - timedelta(days=days)
-    fmt   = "%Y-%m-%dT%H:%M:%S.000"
     srcs: List[tuple] = []
-    for kw in ("cpanel", "whm"):
-        srcs.append(("nvd",
-            f"https://services.nvd.nist.gov/rest/json/cves/2.0"
-            f"?keywordSearch={kw}"
-            f"&pubStartDate={start.strftime(fmt)}"
-            f"&pubEndDate={end.strftime(fmt)}"
-            f"&resultsPerPage=50"))
+    for start, end in _date_windows(days):
+        for kw in ("cpanel", "whm"):
+            srcs.append(("nvd", _nvd_request_url(kw, start, end)))
     srcs += [
         ("circl", "https://cve.circl.lu/api/search/cpanel"),
         ("circl", "https://cve.circl.lu/api/search/whm"),
@@ -143,12 +161,21 @@ def _parse_circl_cves(body: str) -> List[dict]:
 def fetch_cve_feed(timeout: int = 12, days: int = 90) -> List[dict]:
     """Obter CVEs de cPanel/WHM publicadas dentro de `days` de APIs públicas
     (NVD principal, sem auth). Deduplica por id de CVE. Devolve [] se todas
-    as fontes falham — o chamador degrada com graça (offline / cambios de API).
+    as fontes falham — o chamador degrada com graça (offline / mudanças de API).
     """
     seen: Dict[str, dict] = {}
+    api_key = os.environ.get("NVD_API_KEY", "").strip()
+    # Sem API key a NVD limita ~5 req/30s; espaçar as chamadas entre fatias.
+    gap = 0.6 if api_key else 6.0
+    nvd_calls = 0
     for kind, url in cve_feed_sources(days):
+        if kind == "nvd" and nvd_calls:
+            time.sleep(gap)
         try:
-            resp = _do(url, timeout=timeout)
+            headers = {"apiKey": api_key} if (kind == "nvd" and api_key) else None
+            resp = _do(url, timeout=timeout, extra_headers=headers)
+            if kind == "nvd":
+                nvd_calls += 1
             if resp.status != 200 or not resp.body:
                 continue
             items = (_parse_nvd_cves(resp.body) if kind == "nvd"

@@ -1,9 +1,9 @@
 """Módulo cPanelpwn: config."""
 
-import sys, os, threading
+import sys, threading
 from datetime import datetime
 
-VERSION = "2.4"
+VERSION = "2.5"
 
 # ══════════════════════════════════════════════════════════════
 #  CORES
@@ -32,6 +32,8 @@ _CVE_DAYS      = 90      # feed window in days
 _UPDATE_CHECK  = True    # GitHub release version check
 _JSON_LINES    = False   # emit findings as NDJSON on stdout
 _CHECKPOINT    = None    # instância de store.Checkpoint (definida pela CLI em batch)
+_VERIFY_TLS    = False   # verificar certificado TLS (padrão: não, alvos WHM autoassinados)
+_CAFILE        = None    # bundle CA customizado para verificação TLS
 
 def ts():
     return datetime.now().strftime("%H:%M:%S")
@@ -83,7 +85,7 @@ def banner():
 {C.BOLD}╚═╝      ╚══╝╚══╝ ╚═╝  ╚═══╝{C.RESET}
 {C.CYAN}  CVE-2026-41940 — cPanel & WHM Auth Bypass via CRLF Injection{C.RESET}
 {C.DIM}  4 estágios: preauth → injeção CRLF → propagação → verificação → post-exploit{C.RESET}
-{C.RED}  In-The-Wild | CVSS 10.0{C.RESET}
+{C.RED}  In-The-Wild | CVSS 9.8{C.RESET}
 """, file=sys.stderr)
 
 # ══════════════════════════════════════════════════════════════

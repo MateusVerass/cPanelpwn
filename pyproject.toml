@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cpanelpwn"
+version = "2.5"
+description = "Scanner de bypass de autenticação cPanel & WHM (CVE-2026-41940)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "MateusVerass" }]
+keywords = ["cpanel", "whm", "security", "cve", "pentest", "cve-2026-41940"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+# Apenas stdlib — nenhuma dependência de runtime.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pyflakes>=3.0", "ruff>=0.5"]
+
+[project.scripts]
+cpanelpwn = "cpanelpwn.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/MateusVerass/cPanelpwn"
+Repository = "https://github.com/MateusVerass/cPanelpwn"
+Issues = "https://github.com/MateusVerass/cPanelpwn/issues"
+
+[tool.setuptools]
+packages = ["cpanelpwn"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+# Só o essencial (pyflakes): imports/names mortos ou indefinidos.
+select = ["F"]
