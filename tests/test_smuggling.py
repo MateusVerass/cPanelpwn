@@ -82,5 +82,22 @@ class TestDetect(unittest.TestCase):
             srv.shutdown()
 
 
+class TestConfirm(unittest.TestCase):
+    def test_parse_statuses(self):
+        raw = (b"HTTP/1.1 200 OK\r\n\r\nHTTP/1.1 404 Not Found\r\n\r\n")
+        self.assertEqual(smuggling._parse_statuses(raw), [200, 404])
+        self.assertEqual(smuggling._parse_statuses(b""), [])
+
+    def test_not_confirmed_on_normal_server(self):
+        srv, port = _serve(_Normal)
+        try:
+            res = smuggling.confirm("http", "127.0.0.1", port, timeout=2)
+            self.assertFalse(res["confirmed"])
+            self.assertEqual(res["cve"], "CVE-2026-58047")
+            self.assertIn("canary", res)
+        finally:
+            srv.shutdown()
+
+
 if __name__ == "__main__":
     unittest.main()

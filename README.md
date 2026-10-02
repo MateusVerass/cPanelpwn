@@ -146,19 +146,30 @@ As faixas de versão afetadas de cada CVE vêm dos registros CVE (HackerOne/MITR
 e são usadas para atribuição automática:
 
 ```bash
-# O --check diz quais CVEs do catálogo afetam a versão lida
-python3 cPanelpwn.py -u https://alvo.com:2087 --check
-# → target, version, patched, cves[...]
-
 # Detecção ativa do smuggling CL.TE/TE.CL (CVE-2026-58047, alvo único)
 python3 cPanelpwn.py -u https://alvo.com:2087 --smuggle-check
+
+# Confirmação por desincronização real (opt-in; reusa a conexão do back-end)
+python3 cPanelpwn.py -u https://alvo.com:2087 --smuggle-confirm
+
+# Após o bypass: inventariar CVEs remanescentes no alvo comprometido
+python3 cPanelpwn.py -u https://alvo.com:2087 --action cves
 ```
 
 Hoje **apenas a CVE-2026-41940 tem cadeia de exploit** (`[EXPLOIT]` no
-catálogo). A CVE-2026-58047 tem **detecção** (`--smuggle-check`); as demais
-entram no `--check` e na atribuição por versão. Ligar exploits novos é o
-ponto de extensão do registro (`cves.py` + `scanner.py`).
+catálogo). A CVE-2026-58047 tem **detecção e confirmação** (`--smuggle-check` /
+`--smuggle-confirm`); as demais entram no `--check`, na atribuição por versão
+e no inventário pós-auth (`--action cves`). Ligar exploits novos é o ponto de
+extensão do registro (`cves.py` + `scanner.py`/`actions.py`).
 `--cve <ID>` seleciona a CVE alvo (hoje só aceita a 41940).
+
+> **Por que não há exploit automático para 65643/67401?** As duas são vetores
+> **pós-auth (tenant → root)**: exigem uma conta cPanel com privilégio de
+> adicionar domínios (Park/Addon) ou de e-mail (EmailTrack). Como o bypass da
+> 41940 já concede root, encadeá-las não escala privilégio. Além disso os
+> advisories oficiais descrevem apenas o impacto (criação de arquivo
+> arbitrário), não o parâmetro exato — então a tool reporta afetabilidade e
+> pré-requisitos, sem fabricar um payload de RCE.
 
 ---
 
@@ -240,14 +251,15 @@ Ao iniciar, a tool consulta a **NVD API** (`keywordSearch=cpanel` + `whm`, filtr
 | **Fix do CVE feed** | A API NVD recusa janelas de datas > 120 dias (HTTP 404). A janela agora é fatiada em blocos de ≤ 120 dias e há backoff entre chamadas (ou `NVD_API_KEY`) |
 | **Catálogo de CVEs** | `cpanelpwn/cves.py` com 11 CVEs de cPanel/WHM + flags `--list-cves` e `--cve` |
 | **Faixas de versão reais** | Atribuição por versão usando os intervalos dos registros CVE (HackerOne/MITRE) |
-| **Detecção de smuggling** | `--smuggle-check` (CL.TE/TE.CL, CVE-2026-58047) via sockets crus |
+| **Detecção de smuggling** | `--smuggle-check` (CL.TE/TE.CL, CVE-2026-58047) via sockets crus e `--smuggle-confirm` (desincronização real) |
+| **Inventário pós-auth** | `--action cves` (e comando `cves` no shell) lista as CVEs ainda aplicáveis ao alvo já comprometido |
 | **Atribuição por versão** | `--check` reporta todas as CVEs aplicáveis à versão lida; branch 138 adicionada |
 | **Metadados corrigidos** | CVSS da CVE-2026-41940 corrigido para **9.8** (antes 10.0) em banner, README e relatórios |
 | **Segurança TLS** | `--verify-tls` e `--cacert FILE` (por padrão continua sem verificar, para alvos autoassinados) |
 | **Segredos** | `--passwd-file` (não expõe a senha em `ps`) e a senha deixou de ser impressa no log |
 | **Robustez** | Regex de token `/cpsess` e de versão flexíveis, suporte a IPv6 no hostname canônico, reuso do opener HTTP |
 | **Empacotamento** | `LICENSE` (MIT), `pyproject.toml` com entry point `cpanelpwn`, lint (`ruff`) no CI |
-| **Testes** | 93 testes (antes 68): discovery, catálogo de CVEs, smuggling e **E2E** com o `mock_whm.py` |
+| **Testes** | 98 testes (antes 68): discovery, catálogo, smuggling, pós-auth e **E2E** com o `mock_whm.py` |
 
 ---
 
@@ -637,12 +649,14 @@ Scan:
   --check                 Verificação passiva de versão apenas — sem exploit
   --smuggle-check         Detectar HTTP request smuggling CL.TE/TE.CL
                           (CVE-2026-58047) — requer alvo único (-u)
+  --smuggle-confirm       Confirmar o smuggling por desincronização real
+                          (opt-in; reusa a conexão do back-end) — alvo único
   --cve ID                CVE a explorar (padrão: CVE-2026-41940)
   --list-cves             Listar o catálogo de CVEs conhecidas e sair
 
 Post-Exploit:
   --action AÇÃO           Ação: list | passwd | cmd | exec | info | version |
-                                 shell | adduser | addadmin | readfile | dump
+                                 shell | adduser | addadmin | readfile | dump | cves
   --post-all              Executar --action em TODOS os alvos vulneráveis
   --passwd SENHA          Senha (--action passwd / addadmin)
   --passwd-file ARQUIVO   Ler a senha de um arquivo (evita expô-la em ps)

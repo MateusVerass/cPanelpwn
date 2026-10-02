@@ -254,6 +254,9 @@ def run_action(ctx: ScanCtx, args):
             log("ERR", "--read-file requerido para a ação readfile")
     elif a == "dump":
         action_dump(ctx)
+    elif a in ("cves", "remanescente", "remaining"):
+        from . import postexploit
+        postexploit.assess(ctx)
     elif a == "shell":
         whm_shell(ctx)
     else:
@@ -308,6 +311,7 @@ def whm_shell(ctx: ScanCtx):
     addadmin <u> <p>  Criar admin reseller backdoor
     passwd <pass>     Alterar senha root
     dump              Dump massivo de contas + arquivos sensíveis
+    cves              Inventariar CVEs remanescentes (pós-exploit)
 
   {C.CYAN}API (crua):{C.RESET}
     api <endpoint> [key=value ...]
@@ -345,6 +349,10 @@ def whm_shell(ctx: ScanCtx):
 
             elif cmd == "dump":
                 action_dump(ctx)
+
+            elif cmd == "cves":
+                from . import postexploit
+                postexploit.assess(ctx)
 
             elif cmd == "cat":
                 if not arg:
